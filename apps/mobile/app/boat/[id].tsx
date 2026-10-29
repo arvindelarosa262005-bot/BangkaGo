@@ -14,6 +14,7 @@ import { backend, supabase, configured } from "../../src/client";
 import { Screen, Button, Field, Badge, State, styles, c } from "../../src/ui";
 import { useSession } from "../../src/session";
 import { GisRouteCard } from "../../src/GisMap";
+import { OperatorContactCard } from "../../src/BookingContact";
 import { BoatPhoto } from "../(tabs)/index";
 export default function Details() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -141,12 +142,17 @@ export default function Details() {
       ) : (
         s && (
           <>
-            <BoatPhoto path={s.photo_path} />
+            <BoatPhoto
+              path={s.photo_path}
+              vesselSize={s.vessel_size}
+              capacity={s.boat_capacity ?? s.capacity}
+            />
             <View style={styles.row}>
               <Badge value="verified operator" />
               <Badge
                 value={s.mode === "seat" ? "shared trip" : "private charter"}
               />
+              {!!s.vessel_size && <Badge value={s.vessel_size} />}
               {!!avgRating && (
                 <Badge
                   value={`★ ${avgRating} (${reviews.data?.length})`}
@@ -170,10 +176,10 @@ export default function Details() {
               <Text style={styles.subtitle}>{tripDate(s.starts_at)}</Text>
               <Text style={styles.muted}>Arrival: {tripDate(s.ends_at)}</Text>
               <Text style={styles.muted}>
-                {s.capacity} passenger capacity · {s.remaining} available
+                ⛵ Bangka Size: {s.vessel_size || "Standard Outrigger"} · 👥 Max Capacity: {s.boat_capacity ?? s.capacity} pax ({s.remaining} seats left)
               </Text>
               <Text style={styles.muted}>
-                {s.owner_name} ·{" "}
+                Operator: {s.owner_name} ·{" "}
                 {s.mode === "seat" ? "Shared trip" : "Private charter"}
               </Text>
               <Text style={styles.price}>{php(s.price_minor)}</Text>
@@ -181,6 +187,12 @@ export default function Details() {
                 {s.mode === "seat" ? "per passenger" : "whole boat"}
               </Text>
             </View>
+            <OperatorContactCard
+              ownerName={s.owner_name}
+              phone={s.contact_phone}
+              messengerUrl={s.messenger_url}
+              otherContact={s.other_contact}
+            />
             <GisRouteCard
               originName={s.origin}
               destinationName={s.destination}

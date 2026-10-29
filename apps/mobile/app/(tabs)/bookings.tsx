@@ -7,6 +7,7 @@ import { php, tripDate, durationLabel, bookingViewStatus } from "@bangkago/share
 import { backend, supabase } from "../../src/client";
 import { useSession } from "../../src/session";
 import { GisRouteCard } from "../../src/GisMap";
+import { BookingContact, OperatorContactCard } from "../../src/BookingContact";
 import { Screen, Button, Field, Badge, State, styles, c } from "../../src/ui";
 const journeySteps = [
   ["pending_owner_confirmation", "Requested"],
@@ -25,6 +26,14 @@ export default function Bookings() {
     queryKey: ["my-bookings", session?.user.id],
     enabled: !!session,
     queryFn: async () => {
+      const full = await supabase
+        .from("bookings")
+        .select(
+          "*,boats(name,vessel_size,capacity,contact_phone,messenger_url,other_contact,photo_url),boat_schedules(starts_at,ends_at),payments(status,amount_minor)",
+        )
+        .eq("passenger_id", session!.user.id)
+        .order("created_at", { ascending: false });
+      if (!full.error) return full.data;
       const { data, error } = await supabase
         .from("bookings")
         .select(
@@ -266,14 +275,19 @@ export default function Bookings() {
                   onPress={() => action.mutate({ b, operation: "pay" })}
                 />
               )}
-              {["awaiting_payment", "confirmed", "completed"].includes(st) && (
-                <Button
-                  secondary
-                  title="Call operator"
-                  busy={action.isPending}
-                  onPress={() => action.mutate({ b, operation: "contact" })}
-                />
-              )}
+              <OperatorContactCard
+                compact
+                ownerName={b.boats?.name ?? "Boat Operator"}
+                phone={b.boats?.contact_phone}
+                messengerUrl={b.boats?.messenger_url}
+                otherContact={b.boats?.other_contact}
+              />
+              {[
+                "pending_owner_confirmation",
+                "awaiting_payment",
+                "confirmed",
+                "completed",
+              ].includes(st) && <BookingContact id={b.id} />}
               {[
                 "pending_owner_confirmation",
                 "awaiting_payment",

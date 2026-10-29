@@ -15,6 +15,7 @@ import {
 } from "lucide-react-native";
 import { HarborArt } from "../../src/HarborArt";
 import { GisRouteCard, openGisNavigation, resolvePortGis } from "../../src/GisMap";
+import { OperatorContactCard } from "../../src/BookingContact";
 import { php, tripDate, durationLabel } from "@bangkago/shared";
 import { backend, supabase, configured } from "../../src/client";
 import { useSession } from "../../src/session";
@@ -28,37 +29,99 @@ import {
   styles,
   c,
 } from "../../src/ui";
-export function BoatPhoto({ path }: { path?: string }) {
+export function BoatPhoto({
+  path,
+  vesselSize,
+  capacity,
+}: {
+  path?: string;
+  vesselSize?: string;
+  capacity?: number;
+}) {
+  const isDirectUrl =
+    !!path &&
+    (path.startsWith("http://") ||
+      path.startsWith("https://") ||
+      path.startsWith("data:image/"));
   const photo = useQuery({
     queryKey: ["photo", path],
-    enabled: !!path,
+    enabled: !!path && !isDirectUrl,
     queryFn: async () => {
       const { data, error } = await supabase.storage
         .from("boat-photos")
         .createSignedUrl(path!, 3600);
-      if (error) throw error;
-      return data.signedUrl;
+      if (!error && data?.signedUrl) return data.signedUrl;
+      const pub = supabase.storage.from("boat-photos").getPublicUrl(path!);
+      return pub.data.publicUrl;
     },
   });
-  return photo.data ? (
-    <Image
-      accessibilityLabel="Boat photograph"
-      source={{ uri: photo.data }}
-      style={styles.image}
-    />
-  ) : (
-    <View
-      style={[
-        styles.image,
-        {
-          backgroundColor: c.ice,
-          alignItems: "center",
-          justifyContent: "center",
-        },
-      ]}
-    >
-      <Ship color="#8eafd4" size={60} strokeWidth={1} />
-      <Text style={styles.muted}>Boat photo unavailable</Text>
+  const uri = isDirectUrl ? path : photo.data;
+  return (
+    <View style={{ position: "relative" }}>
+      {uri ? (
+        <Image
+          accessibilityLabel="Boat photograph"
+          source={{ uri }}
+          style={styles.image}
+          resizeMode="cover"
+        />
+      ) : (
+        <View
+          style={[
+            styles.image,
+            {
+              backgroundColor: c.ice,
+              alignItems: "center",
+              justifyContent: "center",
+            },
+          ]}
+        >
+          <Ship color="#8eafd4" size={60} strokeWidth={1} />
+          <Text style={styles.muted}>Boat photo unavailable</Text>
+        </View>
+      )}
+      {(!!vesselSize || !!capacity) && (
+        <View
+          style={{
+            position: "absolute",
+            bottom: 10,
+            left: 10,
+            right: 10,
+            flexDirection: "row",
+            flexWrap: "wrap",
+            gap: 6,
+          }}
+        >
+          {!!vesselSize && (
+            <View
+              style={{
+                backgroundColor: "rgba(15, 39, 71, 0.88)",
+                paddingHorizontal: 10,
+                paddingVertical: 5,
+                borderRadius: 99,
+              }}
+            >
+              <Text style={{ fontSize: 11, fontWeight: "700", color: "#FFFFFF" }}>
+                ⛵ Size: {vesselSize}
+              </Text>
+            </View>
+          )}
+          {!!capacity && (
+            <View
+              style={{
+                backgroundColor: "rgba(18, 104, 212, 0.92)",
+                paddingHorizontal: 10,
+                paddingVertical: 5,
+                borderRadius: 99,
+              }}
+            >
+              <Text style={{ fontSize: 11, fontWeight: "700", color: "#FFFFFF" }}>
+                👥 Max Capacity: {capacity} pax
+              </Text>
+            </View>
+          )}
+        </View>
+      )}
     </View>
   );
 }
@@ -421,7 +484,11 @@ export default function Explore() {
                 style={{ gap: 10 }}
                 onPress={() => router.push(`/boat/${s.id}`)}
               >
-                <BoatPhoto path={s.photo_path} />
+                <BoatPhoto
+                  path={s.photo_path}
+                  vesselSize={s.vessel_size}
+                  capacity={s.boat_capacity ?? s.capacity}
+                />
                 <View style={styles.between}>
                   <Text style={styles.h2}>{s.boat_name}</Text>
                   <View style={styles.row}>
@@ -433,6 +500,7 @@ export default function Explore() {
                 </View>
                 <Text style={styles.muted}>
                   Operator: {s.owner_name} · {s.boat_type.replaceAll("_", " ")}
+                  {s.vessel_size ? ` · ${s.vessel_size}` : ""}
                 </Text>
                 <View style={styles.row}>
                   <MapPin size={15} color={c.ocean} />
@@ -457,7 +525,7 @@ export default function Explore() {
                   <View style={styles.row}>
                     <Users color={c.muted} size={16} />
                     <Text style={styles.muted}>
-                      {s.remaining} of {s.capacity} available
+                      {s.remaining} of {s.capacity} seats left (Max {s.boat_capacity ?? s.capacity} pax)
                     </Text>
                   </View>
                 </View>
@@ -490,6 +558,13 @@ export default function Explore() {
                   </Text>
                 </Pressable>
               </View>
+              <OperatorContactCard
+                compact
+                ownerName={s.owner_name}
+                phone={s.contact_phone}
+                messengerUrl={s.messenger_url}
+                otherContact={s.other_contact}
+              />
             </View>
           );
         })

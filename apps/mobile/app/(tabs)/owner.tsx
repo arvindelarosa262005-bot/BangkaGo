@@ -1,5 +1,6 @@
 import React, { useState } from "react";
-import { BookingContact } from "../../src/BookingContact";
+import { BookingContact, OperatorContactCard } from "../../src/BookingContact";
+import { BoatPhoto } from "./index";
 import { Text, View, Pressable } from "react-native";
 import { router } from "expo-router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -24,6 +25,13 @@ import {
   resolvePortGis,
 } from "../../src/GisMap";
 
+const SIZE_PRESETS = [
+  "Small Bangka (15–25 ft · 1–10 pax)",
+  "Medium Bangka (30–40 ft · 11–25 pax)",
+  "Large Outrigger (45–60 ft · 26–60 pax)",
+  "Speedboat / Express Craft (25–35 ft)",
+];
+
 export default function Owner() {
   const { session, profile, loading, error } = useSession();
   const [tab, setTab] = useState("boats");
@@ -38,6 +46,7 @@ export default function Owner() {
     queryFn: async () => {
       const [
         boats,
+        boatImages,
         bookings,
         payouts,
         fees,
@@ -49,6 +58,7 @@ export default function Owner() {
       ] = await Promise.all(
         [
           "boats",
+          "boat_images",
           "bookings",
           "payouts",
           "platform_commissions",
@@ -63,6 +73,7 @@ export default function Owner() {
         boats: boats.filter(
           (b) => b.owner_id === profile!.id || profile?.role === "admin",
         ),
+        boatImages,
         bookings: bookings.filter(
           (b) =>
             profile?.role === "admin" ||
@@ -325,13 +336,23 @@ export default function Owner() {
                     b.pickup_lng ?? homeLoc?.longitude,
                     b.pickup_label || homeLoc?.landmark,
                   );
+                  const uploadedImg = (d.boatImages ?? []).find(
+                    (img: any) => img.boat_id === b.id,
+                  )?.storage_path;
+                  const photoPath = b.photo_url || uploadedImg;
                   return (
                     <View key={b.id} style={styles.card}>
+                      <BoatPhoto
+                        path={photoPath}
+                        vesselSize={b.vessel_size || "Medium Bangka (30–40 ft)"}
+                        capacity={b.capacity}
+                      />
                       <View style={styles.between}>
                         <Text style={styles.h2}>{b.name}</Text>
                         <Badge value={b.verification_status} />
                       </View>
                       <Text style={styles.muted}>
+                        ⛵ {b.vessel_size || "Medium Bangka (30–40 ft)"} · 👥 Max{" "}
                         {b.capacity} passengers ·{" "}
                         {b.active ? "Operating" : "Inactive"}
                       </Text>
@@ -339,6 +360,13 @@ export default function Owner() {
                         Charter {php(b.charter_price_minor)} · seat{" "}
                         {php(b.seat_price_minor)}
                       </Text>
+                      <OperatorContactCard
+                        compact
+                        ownerName={profile?.display_name ?? "Boat Owner"}
+                        phone={b.contact_phone || profile?.phone}
+                        messengerUrl={b.messenger_url}
+                        otherContact={b.other_contact}
+                      />
                       <View
                         style={{
                           backgroundColor: "#F0FDF4",
@@ -396,6 +424,7 @@ export default function Owner() {
                           </Text>
                         </Pressable>
                       </View>
+                      <BoatShowcaseEditor boat={b} notify={setMessage} />
                       {["draft", "needs_correction", "rejected"].includes(
                         b.verification_status,
                       ) && (
@@ -909,6 +938,203 @@ function PickupReminderForm({
   );
 }
 
+function BoatShowcaseEditor({
+  boat,
+  notify,
+}: {
+  boat: any;
+  notify: (msg: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [vesselSize, setVesselSize] = useState(
+    boat.vessel_size || "Medium Bangka (30–40 ft · 11–25 pax)",
+  );
+  const [capacity, setCapacity] = useState(String(boat.capacity ?? 10));
+  const [photoUrl, setPhotoUrl] = useState(boat.photo_url || "");
+  const [contactPhone, setContactPhone] = useState(boat.contact_phone || "");
+  const [messengerUrl, setMessengerUrl] = useState(boat.messenger_url || "");
+  const [otherContact, setOtherContact] = useState(boat.other_contact || "");
+  const [pickupLabel, setPickupLabel] = useState(
+    boat.pickup_label || "Pier 1 Boarding Ramp, Abra de Ilog Port",
+  );
+  const qc = useQueryClient();
+
+  async function uploadBoatPhoto() {
+    setUploading(true);
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: ["image/jpeg", "image/png", "image/webp"],
+        copyToCacheDirectory: true,
+      });
+      if (result.canceled) return;
+      const file = result.assets[0];
+      if (!file.mimeType || !file.size || file.size > 5 * 1024 * 1024) {
+        throw new Error("Choose a JPEG, PNG, or WEBP photo up to 5 MB.");
+      }
+      const { data } = await supabase.auth.getUser();
+      const ext = file.mimeType.split("/")[1] || "jpg";
+      const path = `${data.user!.id}/${boat.id}/${Crypto.randomUUID()}.${ext}`;
+      const response = await fetch(file.uri);
+      const bytes = await response.arrayBuffer();
+      const { error } = await supabase.storage
+        .from("boat-photos")
+        .upload(path, bytes, { contentType: file.mimeType, upsert: false });
+      if (error) throw error;
+      await backend.rpc("add_attachment", {
+        p_boat: boat.id,
+        p_path: path,
+        p_requirement: null,
+        p_expires: null,
+      });
+      setPhotoUrl(path);
+      qc.invalidateQueries();
+      notify("Boat picture uploaded! Passengers can now see your bangka.");
+    } catch (e) {
+      notify(e instanceof Error ? e.message : "Photo upload failed.");
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  const saveShowcase = useMutation({
+    mutationFn: () =>
+      backend.rpc("update_boat_showcase", {
+        p_boat: boat.id,
+        p_data: {
+          vessel_size: vesselSize,
+          capacity: Number(capacity) || boat.capacity,
+          photo_url: photoUrl,
+          contact_phone: contactPhone,
+          messenger_url: messengerUrl,
+          other_contact: otherContact,
+          pickup_label: pickupLabel,
+        },
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries();
+      setOpen(false);
+      notify(
+        "Boat photo, size, capacity, and Messenger/contact details updated!",
+      );
+    },
+    onError: (e) => notify(e.message),
+  });
+
+  return (
+    <View style={{ gap: 8 }}>
+      <Pressable
+        onPress={() => setOpen((v) => !v)}
+        style={{
+          backgroundColor: "#EFF6FF",
+          borderColor: "#BFDBFE",
+          borderWidth: 1,
+          borderRadius: 10,
+          paddingHorizontal: 12,
+          paddingVertical: 9,
+          flexDirection: "row",
+          justifyContent: "space-between",
+          alignItems: "center",
+        }}
+      >
+        <Text style={{ fontSize: 12, fontWeight: "800", color: c.ocean }}>
+          📸{" "}
+          {open
+            ? "Close Photo, Size & Contact Editor"
+            : "Add/Update Boat Picture, Size, Capacity & Messenger Contact"}
+        </Text>
+        <Text style={{ fontSize: 12, fontWeight: "800", color: c.ocean }}>
+          {open ? "▲" : "▼"}
+        </Text>
+      </Pressable>
+      {open && (
+        <View
+          style={{
+            backgroundColor: "#F8FAFC",
+            borderColor: c.border,
+            borderWidth: 1,
+            borderRadius: 12,
+            padding: 12,
+            gap: 10,
+          }}
+        >
+          <Button
+            secondary
+            title="📷 Upload Boat Picture from Device (up to 5 MB)"
+            busy={uploading}
+            onPress={uploadBoatPhoto}
+          />
+          <Field
+            label="Or paste Boat Picture URL (optional)"
+            placeholder="https://example.com/my-bangka.jpg"
+            value={photoUrl}
+            onChangeText={setPhotoUrl}
+          />
+          <Text style={styles.label}>Select Bangka Size Preset</Text>
+          <View style={styles.row}>
+            {SIZE_PRESETS.map((preset) => (
+              <Pressable
+                key={preset}
+                style={[
+                  styles.pill,
+                  vesselSize === preset && styles.pillSelected,
+                ]}
+                onPress={() => setVesselSize(preset)}
+              >
+                <Text style={{ fontSize: 11, fontWeight: "700", color: c.navy }}>
+                  {preset}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
+          <Field
+            label="Bangka Size & Dimensions (shown on photo)"
+            placeholder="e.g. Large Outrigger · 45 ft × 8 ft"
+            value={vesselSize}
+            onChangeText={setVesselSize}
+          />
+          <Field
+            label="Max Passenger Capacity"
+            keyboardType="number-pad"
+            value={capacity}
+            onChangeText={setCapacity}
+          />
+          <Field
+            label="Boat Owner Mobile / Call Number"
+            placeholder="e.g. 09171234567"
+            keyboardType="phone-pad"
+            value={contactPhone}
+            onChangeText={setContactPhone}
+          />
+          <Field
+            label="Facebook Messenger Link or Username (for Messenger Call/Chat)"
+            placeholder="e.g. m.me/juan.delacruz or facebook.com/..."
+            autoCapitalize="none"
+            value={messengerUrl}
+            onChangeText={setMessengerUrl}
+          />
+          <Field
+            label="Other Contact (Viber, WhatsApp, VHF Radio, etc.)"
+            placeholder="e.g. Viber: 09171234567"
+            value={otherContact}
+            onChangeText={setOtherContact}
+          />
+          <Field
+            label="Default GIS Boarding Bay / Landmark"
+            value={pickupLabel}
+            onChangeText={setPickupLabel}
+          />
+          <Button
+            title="Save Photo, Size & Contact Info"
+            busy={saveShowcase.isPending}
+            onPress={() => saveShowcase.mutate()}
+          />
+        </View>
+      )}
+    </View>
+  );
+}
+
 function BoatForm({
   locations,
   notify,
@@ -921,6 +1147,19 @@ function BoatForm({
   const [open, setOpen] = useState(false);
   const [pickupLabel, setPickupLabel] = useState(
     existing?.pickup_label ?? "Pier 1 Boarding Ramp, Abra de Ilog Port",
+  );
+  const [vesselSize, setVesselSize] = useState(
+    existing?.vessel_size ?? "Medium Bangka (30–40 ft · 11–25 pax)",
+  );
+  const [photoUrl, setPhotoUrl] = useState(existing?.photo_url ?? "");
+  const [contactPhone, setContactPhone] = useState(
+    existing?.contact_phone ?? "",
+  );
+  const [messengerUrl, setMessengerUrl] = useState(
+    existing?.messenger_url ?? "",
+  );
+  const [otherContact, setOtherContact] = useState(
+    existing?.other_contact ?? "",
   );
   const qc = useQueryClient();
   const form = useForm({
@@ -955,6 +1194,11 @@ function BoatForm({
           pickup_label: pickupLabel,
           pickup_lat: portGis.lat,
           pickup_lng: portGis.lng,
+          vessel_size: vesselSize,
+          photo_url: photoUrl,
+          contact_phone: contactPhone,
+          messenger_url: messengerUrl,
+          other_contact: otherContact,
         },
         p_id: existing?.id ?? null,
       });
@@ -1023,18 +1267,67 @@ function BoatForm({
               ),
             )}
           </View>
+          <Text style={styles.label}>Bangka size preset</Text>
+          <View style={styles.row}>
+            {SIZE_PRESETS.map((preset) => (
+              <Pressable
+                key={preset}
+                style={[
+                  styles.pill,
+                  vesselSize === preset && styles.pillSelected,
+                ]}
+                onPress={() => setVesselSize(preset)}
+              >
+                <Text style={{ fontSize: 11, fontWeight: "700", color: c.navy }}>
+                  {preset}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
+          <Field
+            label="Bangka size / dimensions"
+            placeholder="e.g. Medium Bangka (35 ft × 7 ft)"
+            value={vesselSize}
+            onChangeText={setVesselSize}
+          />
           <Controller
             control={form.control}
             name="capacity"
             render={({ field }) => (
               <Field
-                label="Approved passenger capacity"
+                label="Approved passenger capacity (Max pax)"
                 keyboardType="number-pad"
                 value={String(field.value)}
                 onChangeText={(v) => field.onChange(v)}
                 error={form.formState.errors.capacity?.message as string}
               />
             )}
+          />
+          <Field
+            label="Boat Picture URL (or upload after saving)"
+            placeholder="https://example.com/bangka-photo.jpg"
+            value={photoUrl}
+            onChangeText={setPhotoUrl}
+          />
+          <Field
+            label="Boat Owner Mobile / Call Number"
+            placeholder="e.g. 09171234567"
+            keyboardType="phone-pad"
+            value={contactPhone}
+            onChangeText={setContactPhone}
+          />
+          <Field
+            label="Facebook Messenger Link / Username (for Messenger Call/Chat)"
+            placeholder="e.g. m.me/juan.delacruz"
+            autoCapitalize="none"
+            value={messengerUrl}
+            onChangeText={setMessengerUrl}
+          />
+          <Field
+            label="Other Contact (Viber, WhatsApp, VHF Radio, etc.)"
+            placeholder="e.g. Viber: 09171234567"
+            value={otherContact}
+            onChangeText={setOtherContact}
           />
           <Text style={styles.label}>Home port</Text>
           <View style={styles.row}>

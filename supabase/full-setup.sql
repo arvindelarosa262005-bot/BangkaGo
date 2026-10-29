@@ -581,6 +581,11 @@ update public.locations set latitude=13.2185, longitude=120.5936, landmark='Mamb
 alter table public.boats add column if not exists pickup_label text not null default '';
 alter table public.boats add column if not exists pickup_lat double precision;
 alter table public.boats add column if not exists pickup_lng double precision;
+alter table public.boats add column if not exists vessel_size text not null default 'Medium Bangka (30–40 ft)';
+alter table public.boats add column if not exists photo_url text not null default '';
+alter table public.boats add column if not exists contact_phone text not null default '';
+alter table public.boats add column if not exists messenger_url text not null default '';
+alter table public.boats add column if not exists other_contact text not null default '';
 
 alter table public.boat_schedules add column if not exists pickup_label text not null default '';
 alter table public.boat_schedules add column if not exists pickup_lat double precision;
@@ -596,6 +601,17 @@ create or replace function private.owns_boat(p_id uuid) returns boolean language
  select exists(select 1 from public.boats b join public.profiles p on p.id=b.owner_id where b.id=p_id and (p.id=auth.uid() or private.is_admin()) and p.account_status='active')
 $$;
 
+create or replace function private.add_attachment(p_boat uuid,p_path text,p_requirement uuid default null,p_expires date default null) returns void language plpgsql security definer set search_path='' as $$begin
+ if not private.owns_boat(p_boat) or split_part(p_path,'/',1)<>auth.uid()::text then raise exception 'Attachment access denied';end if;
+ if p_requirement is not null and not exists(select 1 from public.boats where id=p_boat and verification_status in ('draft','needs_correction','rejected')) then raise exception 'Only draft or correction registrations accept document uploads';end if;
+ if not exists(select 1 from storage.objects where bucket_id=case when p_requirement is null then 'boat-photos' else 'boat-documents' end and name=p_path and owner_id=auth.uid()::text) then raise exception 'Upload file first';end if;
+ if p_requirement is null then
+  insert into public.boat_images(boat_id,storage_path) values(p_boat,p_path) on conflict(storage_path) do nothing;
+ else
+  insert into public.boat_documents(boat_id,requirement_id,storage_path,expires_on) values(p_boat,p_requirement,p_path,p_expires) on conflict(storage_path) do nothing;
+ end if;
+end$$;
+
 create or replace function private.save_boat(p_data jsonb,p_id uuid default null) returns uuid language plpgsql security definer set search_path='' as $$declare v_id uuid;begin
  if exists(select 1 from public.profiles where id=auth.uid() and account_status='active' and role in ('owner','admin')) then
   insert into public.boat_owners(id,verification_status) values(auth.uid(),'approved') on conflict(id) do nothing;
@@ -603,7 +619,7 @@ create or replace function private.save_boat(p_data jsonb,p_id uuid default null
  if not exists(select 1 from public.boat_owners o join public.profiles p on p.id=o.id where o.id=auth.uid() and p.account_status='active' and o.verification_status<>'suspended') then raise exception 'Active owner account required';end if;
  if p_id is not null and not private.owns_boat(p_id) then raise exception 'Not your boat';end if;
  if p_id is not null and exists(select 1 from public.boat_schedules where boat_id=p_id and ends_at>now() and status<>'cancelled') then raise exception 'Close future schedules before changing registration details';end if;
- insert into public.boats(id,owner_id,name,description,boat_type,capacity,home_location_id,charter_price_minor,seat_price_minor,pickup_label,pickup_lat,pickup_lng)
+ insert into public.boats(id,owner_id,name,description,boat_type,capacity,home_location_id,charter_price_minor,seat_price_minor,pickup_label,pickup_lat,pickup_lng,vessel_size,photo_url,contact_phone,messenger_url,other_contact)
  values(
   coalesce(p_id,gen_random_uuid()),
   auth.uid(),
@@ -616,7 +632,12 @@ create or replace function private.save_boat(p_data jsonb,p_id uuid default null
   (p_data->>'seat_price_minor')::bigint,
   coalesce(p_data->>'pickup_label',''),
   nullif(p_data->>'pickup_lat','')::double precision,
-  nullif(p_data->>'pickup_lng','')::double precision
+  nullif(p_data->>'pickup_lng','')::double precision,
+  coalesce(nullif(trim(p_data->>'vessel_size'),''),'Medium Bangka (30–40 ft)'),
+  coalesce(trim(p_data->>'photo_url'),''),
+  coalesce(trim(p_data->>'contact_phone'),''),
+  coalesce(trim(p_data->>'messenger_url'),''),
+  coalesce(trim(p_data->>'other_contact'),'')
  )
  on conflict(id) do update set
   name=excluded.name,
@@ -629,12 +650,40 @@ create or replace function private.save_boat(p_data jsonb,p_id uuid default null
   pickup_label=excluded.pickup_label,
   pickup_lat=excluded.pickup_lat,
   pickup_lng=excluded.pickup_lng,
+  vessel_size=excluded.vessel_size,
+  photo_url=excluded.photo_url,
+  contact_phone=excluded.contact_phone,
+  messenger_url=excluded.messenger_url,
+  other_contact=excluded.other_contact,
   verification_status='draft',
   active=false,
   updated_at=now()
  returning id into v_id;
+ if coalesce(trim(p_data->>'contact_phone'),'')<>'' then
+  update public.profiles set phone=trim(p_data->>'contact_phone'), updated_at=now() where id=auth.uid();
+ end if;
  return v_id;
 end$$;
+
+create or replace function private.update_boat_showcase(p_boat uuid,p_data jsonb) returns void language plpgsql security definer set search_path='' as $$
+begin
+ if not private.owns_boat(p_boat) then raise exception 'Boat operator access required';end if;
+ update public.boats
+ set
+  vessel_size=coalesce(nullif(trim(p_data->>'vessel_size'),''), vessel_size),
+  capacity=coalesce(nullif(p_data->>'capacity','')::int, capacity),
+  photo_url=coalesce(trim(p_data->>'photo_url'), photo_url),
+  contact_phone=coalesce(trim(p_data->>'contact_phone'), contact_phone),
+  messenger_url=coalesce(trim(p_data->>'messenger_url'), messenger_url),
+  other_contact=coalesce(trim(p_data->>'other_contact'), other_contact),
+  pickup_label=coalesce(nullif(trim(p_data->>'pickup_label'),''), pickup_label),
+  updated_at=now()
+ where id=p_boat;
+ if coalesce(trim(p_data->>'contact_phone'),'')<>'' then
+  update public.profiles set phone=trim(p_data->>'contact_phone'), updated_at=now() where id=auth.uid();
+ end if;
+end$$;
+create or replace function public.update_boat_showcase(p_boat uuid,p_data jsonb) returns void language sql security invoker set search_path='' as $$select private.update_boat_showcase(p_boat,p_data)$$;
 
 create or replace function private.save_schedule(p_data jsonb) returns uuid language plpgsql security definer set search_path='' as $$declare b public.boats;s public.boat_schedules;v_id uuid;begin
  select * into b from public.boats where id=(p_data->>'boat_id')::uuid for update;
@@ -798,7 +847,12 @@ create function public.available_schedules() returns table(
  origin_lat double precision,
  origin_lng double precision,
  destination_lat double precision,
- destination_lng double precision
+ destination_lng double precision,
+ vessel_size text,
+ boat_capacity int,
+ contact_phone text,
+ messenger_url text,
+ other_contact text
 ) language sql stable security definer set search_path='' as $$
  select
   s.id,
@@ -814,7 +868,7 @@ create function public.available_schedules() returns table(
   o.name,
   d.name,
   greatest(0,s.capacity-coalesce((select sum(case when x.mode='charter' then s.capacity else x.passenger_count end)::int from public.bookings x where x.schedule_id=s.id and (x.status in ('confirmed','completed') or (x.status in ('pending_owner_confirmation','awaiting_payment') and x.reservation_expires_at>now()))),0)),
-  (select i.storage_path from public.boat_images i where i.boat_id=b.id order by i.created_at limit 1),
+  coalesce(nullif(b.photo_url,''), (select i.storage_path from public.boat_images i where i.boat_id=b.id order by i.created_at desc limit 1)),
   p.display_name,
   b.cancellation_policy,
   least(s.starts_at,(select min(x.reservation_expires_at) from public.bookings x where x.schedule_id=s.id and x.status in ('pending_owner_confirmation','awaiting_payment') and x.reservation_expires_at>now()),(select min(c.effective_at) from public.commission_rules c where c.effective_at>now())),
@@ -824,7 +878,12 @@ create function public.available_schedules() returns table(
   o.latitude,
   o.longitude,
   d.latitude,
-  d.longitude
+  d.longitude,
+  coalesce(nullif(b.vessel_size,''), 'Medium Bangka (30–40 ft)'),
+  b.capacity,
+  coalesce(nullif(b.contact_phone,''), p.phone, ''),
+  coalesce(b.messenger_url, ''),
+  coalesce(b.other_contact, '')
  from public.boat_schedules s
  join public.boats b on b.id=s.boat_id
  join public.profiles p on p.id=b.owner_id
@@ -833,6 +892,34 @@ create function public.available_schedules() returns table(
  join public.locations d on d.id=r.destination_id
  where private.visible_boat(b.id) and s.status='open' and s.starts_at>now() and r.active and o.active and d.active
 $$;
+
+drop function if exists public.booking_contact(uuid);
+create function public.booking_contact(p_id uuid) returns table(
+ display_name text,
+ phone text,
+ role text,
+ messenger_url text,
+ other_contact text
+) language plpgsql stable security definer set search_path='' as $$
+declare
+ b public.bookings;
+ v_boat public.boats;
+begin
+ select * into b from public.bookings where id=p_id;
+ if not found or not private.can_read_booking(p_id) or b.status not in ('pending_owner_confirmation','awaiting_payment','confirmed','completed') then
+  raise exception 'Contact details are available for active bookings';
+ end if;
+ select * into v_boat from public.boats where id=b.boat_id;
+ return query
+ select
+  p.display_name,
+  case when p.id=v_boat.owner_id then coalesce(nullif(v_boat.contact_phone,''), p.phone) else p.phone end,
+  p.role,
+  case when p.id=v_boat.owner_id then coalesce(v_boat.messenger_url,'') else '' end,
+  case when p.id=v_boat.owner_id then coalesce(v_boat.other_contact,'') else '' end
+ from public.profiles p
+ where p.id=case when auth.uid()=b.passenger_id then v_boat.owner_id else b.passenger_id end;
+end$$;
 
 create or replace function private.complete_direct_payment(p_booking uuid) returns text language plpgsql security definer set search_path='' as $$
 declare
@@ -923,7 +1010,10 @@ grant execute on function
  private.admin_process_refund(uuid,text),
  public.admin_process_refund(uuid,text),
  private.send_pickup_reminder(uuid,text,double precision,double precision,text),
- public.send_pickup_reminder(uuid,text,double precision,double precision,text)
+ public.send_pickup_reminder(uuid,text,double precision,double precision,text),
+ private.update_boat_showcase(uuid,jsonb),
+ public.update_boat_showcase(uuid,jsonb),
+ public.booking_contact(uuid)
 to authenticated;
 grant execute on function
  private.check_gmail_status(text),
