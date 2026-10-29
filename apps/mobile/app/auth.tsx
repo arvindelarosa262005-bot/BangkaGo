@@ -12,7 +12,7 @@ import {
 } from "lucide-react-native";
 import { HarborArt } from "../src/HarborArt";
 import { LiveIndicator } from "../src/live";
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import {
   Text,
   View,
@@ -20,6 +20,7 @@ import {
   StyleSheet,
   useWindowDimensions,
   Platform,
+  AppState,
 } from "react-native";
 import Svg, { Path } from "react-native-svg";
 import AsyncStorage from "@react-native-async-storage/async-storage";
@@ -55,6 +56,30 @@ function isValidGmail(email: string): boolean {
   return /^[a-zA-Z0-9._%+-]+@gmail\.com$/i.test(email.trim());
 }
 
+function parseQueryAndHash(rawUrl: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  const qIndex = rawUrl.indexOf("?");
+  const hIndex = rawUrl.indexOf("#");
+  if (qIndex !== -1) {
+    const qPart =
+      hIndex !== -1 && hIndex > qIndex
+        ? rawUrl.slice(qIndex + 1, hIndex)
+        : rawUrl.slice(qIndex + 1);
+    const sp = new URLSearchParams(qPart);
+    sp.forEach((v, k) => {
+      out[k] = v;
+    });
+  }
+  if (hIndex !== -1) {
+    const hPart = rawUrl.slice(hIndex + 1);
+    const hp = new URLSearchParams(hPart);
+    hp.forEach((v, k) => {
+      out[k] = v;
+    });
+  }
+  return out;
+}
+
 export default function Auth() {
   const params = useLocalSearchParams();
   const { width } = useWindowDimensions();
@@ -69,53 +94,125 @@ export default function Auth() {
   const [message, setMessage] = useState("");
   const [isError, setIsError] = useState(false);
   const [busy, setBusy] = useState(false);
+  const handledUrlRef = useRef<string>("");
+
+  const expoRedirectUrl =
+    Platform.OS === "web" && typeof window !== "undefined"
+      ? `${window.location.origin}/auth`
+      : Linking.createURL("auth");
+
+  async function finalizeRoleAndRedirect() {
+    const pendingRole = await AsyncStorage.getItem("pending-oauth-role");
+    if (pendingRole) {
+      await AsyncStorage.removeItem("pending-oauth-role");
+      if (pendingRole === "owner") {
+        try {
+          await backend.rpc("register_as_owner");
+        } catch {
+          /* profile may already be owner or admin */
+        }
+      }
+    }
+    router.replace("/(tabs)");
+  }
+
+  async function consumeAuthUrl(rawUrl?: string | null) {
+    if (!configured || !rawUrl || handledUrlRef.current === rawUrl) return;
+    if (
+      !rawUrl.includes("code=") &&
+      !rawUrl.includes("access_token=") &&
+      !rawUrl.includes("token_hash=") &&
+      !rawUrl.includes("error_description=")
+    ) {
+      return;
+    }
+    handledUrlRef.current = rawUrl;
+    const kv = parseQueryAndHash(rawUrl);
+
+    if (kv.error_description || kv.error) {
+      setIsError(true);
+      setMessage(
+        decodeURIComponent(
+          (kv.error_description || kv.error).replace(/\+/g, " "),
+        ),
+      );
+      setBusy(false);
+      return;
+    }
+
+    setBusy(true);
+    setIsError(false);
+    setMessage("Tinatanggap ang iyong Google / Gmail session…");
+    try {
+      if (kv.access_token && kv.refresh_token) {
+        const { error } = await supabase.auth.setSession({
+          access_token: kv.access_token,
+          refresh_token: kv.refresh_token,
+        });
+        if (error) throw error;
+        await finalizeRoleAndRedirect();
+        return;
+      }
+      if (kv.code) {
+        const { error } = await supabase.auth.exchangeCodeForSession(kv.code);
+        if (error) throw error;
+        await finalizeRoleAndRedirect();
+        return;
+      }
+      if (kv.token_hash) {
+        const { error } = await supabase.auth.verifyOtp({
+          token_hash: kv.token_hash,
+          type: (kv.type as any) || "email",
+        });
+        if (error) throw error;
+        await finalizeRoleAndRedirect();
+        return;
+      }
+    } catch (e) {
+      setIsError(true);
+      setMessage(
+        e instanceof Error
+          ? e.message
+          : "Hindi ma-verify ang session. Gamitin ang 6-digit Gmail OTP sa ibaba.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
 
   useEffect(() => {
     if (configured && typeof params.code === "string" && params.code) {
-      supabase.auth
-        .exchangeCodeForSession(params.code)
-        .then(({ error }) => {
-          if (error) {
-            setIsError(true);
-            setMessage(error.message);
-          }
-        });
+      void consumeAuthUrl(`?code=${params.code}`);
     }
+
+    Linking.getInitialURL().then((initialUrl) => {
+      if (initialUrl) void consumeAuthUrl(initialUrl);
+    });
+
     const urlSub = Linking.addEventListener("url", ({ url }) => {
-      if (!configured) return;
-      try {
-        const parsed = Linking.parse(url);
-        const code = parsed.queryParams?.code;
-        if (typeof code === "string" && code) {
-          supabase.auth.exchangeCodeForSession(code).then(({ error }) => {
-            if (error) {
-              setIsError(true);
-              setMessage(error.message);
-            }
-          });
-        }
-      } catch {
-        /* ignore malformed URL */
+      void consumeAuthUrl(url);
+    });
+
+    const appStateSub = AppState.addEventListener("change", (nextState) => {
+      if (nextState === "active" && configured) {
+        Linking.getInitialURL().then((u) => {
+          if (u) void consumeAuthUrl(u);
+        });
+        supabase.auth.getSession().then(({ data }) => {
+          if (data.session) void finalizeRoleAndRedirect();
+        });
       }
     });
+
     const { data } = supabase.auth.onAuthStateChange(async (e, session) => {
       if (e === "SIGNED_IN" && session) {
-        const pendingRole = await AsyncStorage.getItem("pending-oauth-role");
-        if (pendingRole) {
-          await AsyncStorage.removeItem("pending-oauth-role");
-          if (pendingRole === "owner") {
-            try {
-              await backend.rpc("register_as_owner");
-            } catch {
-              /* profile may already be owner or admin */
-            }
-          }
-        }
-        router.replace("/(tabs)");
+        await finalizeRoleAndRedirect();
       }
     });
+
     return () => {
       urlSub.remove();
+      appStateSub.remove();
       data.subscription.unsubscribe();
     };
   }, [params.code]);
@@ -187,11 +284,6 @@ export default function Auth() {
         // Fallback to Supabase Auth shouldCreateUser enforcement below
       }
 
-      const redirectTo =
-        Platform.OS === "web" && typeof window !== "undefined"
-          ? `${window.location.origin}/auth`
-          : Linking.createURL("auth");
-
       await AsyncStorage.setItem(
         "pending-oauth-role",
         mode === "signup" ? role : "passenger",
@@ -203,7 +295,7 @@ export default function Auth() {
         email: cleanEmail,
         options: {
           shouldCreateUser: mode === "signup",
-          emailRedirectTo: redirectTo,
+          emailRedirectTo: expoRedirectUrl,
           data:
             mode === "signup"
               ? { display_name: displayName.trim(), role }
@@ -231,7 +323,7 @@ export default function Auth() {
       setOtpSent(true);
       setIsError(false);
       setMessage(
-        `Naipadala na ang OTP sa iyong Gmail inbox (${cleanEmail}). Buksan ang iyong Gmail at ilagay ang 6-digit OTP code sa ibaba.`,
+        `Naipadala na ang OTP sa iyong Gmail inbox (${cleanEmail}). Buksan ang Gmail app at ilagay ang 6-digit OTP code sa ibaba.`,
       );
     } catch (e) {
       setIsError(true);
@@ -251,7 +343,18 @@ export default function Auth() {
     const rawInput = otpCode.trim();
     if (!rawInput) {
       setIsError(true);
-      setMessage("Ilagay ang OTP code na galing sa iyong Gmail inbox.");
+      setMessage(
+        "Ilagay ang 6-digit OTP code mula sa iyong Gmail inbox (o i-paste ang redirect link).",
+      );
+      return;
+    }
+
+    if (
+      rawInput.includes("code=") ||
+      rawInput.includes("access_token=") ||
+      rawInput.includes("token_hash=")
+    ) {
+      await consumeAuthUrl(rawInput);
       return;
     }
 
@@ -260,45 +363,6 @@ export default function Auth() {
     setMessage("");
 
     try {
-      // Support pasting either the 6/8-digit OTP code OR a full confirmation URL from Gmail
-      if (rawInput.startsWith("http://") || rawInput.startsWith("https://")) {
-        const urlObj = new URL(rawInput);
-        const tokenHash =
-          urlObj.searchParams.get("token_hash") ||
-          urlObj.searchParams.get("token");
-        const codeParam = urlObj.searchParams.get("code");
-        const hashParams = new URLSearchParams(urlObj.hash.replace(/^#/, ""));
-        const accessToken = hashParams.get("access_token");
-        const refreshToken = hashParams.get("refresh_token");
-
-        if (accessToken && refreshToken) {
-          const { error } = await supabase.auth.setSession({
-            access_token: accessToken,
-            refresh_token: refreshToken,
-          });
-          if (error) throw error;
-          router.replace("/(tabs)");
-          return;
-        }
-        if (codeParam) {
-          const { error } =
-            await supabase.auth.exchangeCodeForSession(codeParam);
-          if (error) throw error;
-          router.replace("/(tabs)");
-          return;
-        }
-        if (tokenHash) {
-          const { error } = await supabase.auth.verifyOtp({
-            token_hash: tokenHash,
-            type: "email",
-          });
-          if (error) throw error;
-          router.replace("/(tabs)");
-          return;
-        }
-      }
-
-      // Standard 6-digit / 8-digit OTP token verification
       const token = rawInput.replace(/\s+/g, "");
       let lastError: Error | null = null;
       const typesToTry: Array<"email" | "signup" | "magiclink"> =
@@ -356,14 +420,10 @@ export default function Auth() {
     try {
       const chosenRole = mode === "signup" ? role : "passenger";
       await AsyncStorage.setItem("pending-oauth-role", chosenRole);
-      const redirectTo =
-        Platform.OS === "web" && typeof window !== "undefined"
-          ? `${window.location.origin}/auth`
-          : Linking.createURL("auth");
       const { data, error } = await supabase.auth.signInWithOAuth({
         provider: "google",
         options: {
-          redirectTo,
+          redirectTo: expoRedirectUrl,
           skipBrowserRedirect: Platform.OS !== "web",
           queryParams: {
             access_type: "offline",
@@ -373,6 +433,10 @@ export default function Auth() {
       });
       if (error) throw error;
       if (Platform.OS !== "web" && data?.url) {
+        setOtpSent(true);
+        setMessage(
+          `Pagkatapos pumili ng Google account sa browser: kung hindi kusang bumalik sa Expo Go, idagdag ang "${expoRedirectUrl}" sa Supabase Redirect URLs — O KAYA i-paste dito sa box sa ibaba ang URL mula sa browser / gamitin ang Gmail OTP!`,
+        );
         await Linking.openURL(data.url);
       }
     } catch (e) {
@@ -481,8 +545,8 @@ export default function Auth() {
           </Text>
           <Text style={[styles.subtitle, { marginBottom: 6 }]}>
             {mode === "signup"
-              ? "I-register ang iyong Gmail at kunin ang OTP code sa iyong Gmail inbox."
-              : "Mag-sign in gamit ang OTP code na ipapadala sa iyong rehistradong Gmail inbox."}
+              ? "Ilagay ang iyong pangalan at @gmail.com address para makatanggap ng 6-digit OTP code sa iyong Gmail inbox (direkta sa Expo Go, hindi na kailangang lumabas sa browser)."
+              : "Ilagay ang iyong rehistradong @gmail.com address para makatanggap ng 6-digit OTP code sa iyong Gmail inbox."}
           </Text>
 
           <View style={auth.tabs}>
@@ -580,11 +644,11 @@ export default function Auth() {
                 <Text
                   style={{ fontSize: 12, fontWeight: "700", color: c.navy }}
                 >
-                  Buksan ang iyong Gmail Inbox ({email.trim()})
+                  Ilagay ang 6-Digit OTP mula sa Gmail (o Redirect URL)
                 </Text>
               </View>
               <Field
-                label="6-Digit OTP Code from Gmail Inbox"
+                label="6-Digit OTP Code from Gmail Inbox (or Callback URL)"
                 placeholder="Halimbawa: 123456"
                 icon={<KeyRound size={18} color={c.ocean} />}
                 keyboardType="default"
@@ -601,21 +665,23 @@ export default function Auth() {
                 busy={busy}
                 onPress={verifyGmailOtp}
               />
-              <Pressable
-                accessibilityRole="button"
-                disabled={busy}
-                onPress={requestGmailOtp}
-                style={{
-                  flexDirection: "row",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  gap: 6,
-                  paddingVertical: 6,
-                }}
-              >
-                <RefreshCw size={13} color={c.ocean} />
-                <Text style={styles.link}>Resend OTP to Gmail</Text>
-              </Pressable>
+              {!!email.trim() && (
+                <Pressable
+                  accessibilityRole="button"
+                  disabled={busy}
+                  onPress={requestGmailOtp}
+                  style={{
+                    flexDirection: "row",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    gap: 6,
+                    paddingVertical: 6,
+                  }}
+                >
+                  <RefreshCw size={13} color={c.ocean} />
+                  <Text style={styles.link}>Resend OTP to Gmail</Text>
+                </Pressable>
+              )}
             </View>
           )}
 
@@ -678,6 +744,35 @@ export default function Auth() {
                 : "Sign in with Google"}
             </Text>
           </Pressable>
+
+          {Platform.OS !== "web" && (
+            <View
+              style={{
+                backgroundColor: "#F8FAFC",
+                borderRadius: 10,
+                padding: 10,
+                borderWidth: 1,
+                borderColor: c.border,
+                gap: 3,
+              }}
+            >
+              <Text style={{ fontSize: 10.5, fontWeight: "700", color: c.navy }}>
+                💡 Gamit ang Expo Go sa Phone?
+              </Text>
+              <Text style={{ fontSize: 10.5, color: c.muted, lineHeight: 15 }}>
+                Pinakamabilis ang{" "}
+                <Text style={{ fontWeight: "700", color: c.ocean }}>
+                  Gmail OTP
+                </Text>{" "}
+                sa itaas dahil hindi na kailangang lumabas sa Chrome. Kung
+                gagamit ng Google button, idagdag ang{" "}
+                <Text style={{ fontWeight: "700", color: c.navy }}>
+                  {expoRedirectUrl}
+                </Text>{" "}
+                sa Supabase → Authentication → URL Configuration → Redirect URLs.
+              </Text>
+            </View>
+          )}
 
           <View style={auth.divider}>
             <View style={auth.line} />
