@@ -123,7 +123,9 @@ export default function Auth() {
     setBusy(true);
     setMessage("");
     try {
-      const chosenRole = mode === "signup" ? form.getValues("role") : "passenger";
+      const chosenRole =
+        (mode === "signup" ? form.getValues("role") : "passenger") ??
+        "passenger";
       await AsyncStorage.setItem("pending-oauth-role", chosenRole);
       const redirectTo =
         Platform.OS === "web" && typeof window !== "undefined"

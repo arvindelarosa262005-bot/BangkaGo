@@ -60,6 +60,37 @@ type Row = Record<string, any>;
 const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: 1, staleTime: 15000 } },
 });
+const navGroups = [
+  {
+    title: "COMMAND CENTER",
+    items: [["Overview", LayoutDashboard]],
+  },
+  {
+    title: "FLEET & OPERATIONS",
+    items: [
+      ["Boat registrations", Ship],
+      ["People", Users],
+      ["Bookings", CalendarDays],
+    ],
+  },
+  {
+    title: "FINANCE & LEDGER",
+    items: [
+      ["Payments", CreditCard],
+      ["Commissions", Wallet],
+      ["Refunds", ArrowDownLeft],
+      ["Payouts", ArrowUpRight],
+    ],
+  },
+  {
+    title: "GOVERNANCE & SYSTEM",
+    items: [
+      ["Support", LifeBuoy],
+      ["Audit trail", ClipboardList],
+      ["Settings", Settings],
+    ],
+  },
+] as const;
 const sections = [
   ["Overview", LayoutDashboard],
   ["Boat registrations", Ship],
@@ -413,26 +444,39 @@ function Console({
     queryKey: ["overview", from],
     enabled: configured,
     queryFn: async () => {
-      const [boats, bookings, profiles, payments, fees, payouts, refunds] =
-        await Promise.all(
-          [
-            "boats",
-            "bookings",
-            "profiles",
-            "payments",
-            "platform_commissions",
-            "payouts",
-            "refunds",
-          ].map((t) => backend.rows(t)),
-        );
+      const [
+        boats,
+        bookings,
+        profiles,
+        payments,
+        fees,
+        payouts,
+        refunds,
+        support,
+      ] = await Promise.all(
+        [
+          "boats",
+          "bookings",
+          "profiles",
+          "payments",
+          "platform_commissions",
+          "payouts",
+          "refunds",
+          "support_tickets",
+        ].map((t) => backend.rows(t)),
+      );
       return {
         boats,
         bookings: bookings.filter((r) => r.created_at >= from),
+        allBookings: bookings,
         profiles,
         payments: payments.filter((r) => r.created_at >= from),
         fees: fees.filter((r) => r.created_at >= from),
         payouts: payouts.filter((r) => r.created_at >= from),
+        allPayouts: payouts,
         refunds: refunds.filter((r) => r.created_at >= from),
+        allRefunds: refunds,
+        support,
       };
     },
   });
@@ -546,60 +590,103 @@ function Console({
     a.click();
     URL.revokeObjectURL(url);
   }
+  const badgeCount = (label: string) => {
+    if (!o) return 0;
+    if (label === "Boat registrations")
+      return o.boats.filter((b) =>
+        ["submitted", "under_review"].includes(b.verification_status),
+      ).length;
+    if (label === "Bookings")
+      return (o.allBookings ?? o.bookings).filter((b) =>
+        ["pending_owner_confirmation", "awaiting_payment"].includes(
+          bookingViewStatus(b),
+        ),
+      ).length;
+    if (label === "Payouts")
+      return (o.allPayouts ?? o.payouts).filter((p) => p.status === "pending")
+        .length;
+    if (label === "Refunds")
+      return (o.allRefunds ?? o.refunds).filter((r) => r.status === "requested")
+        .length;
+    if (label === "Support")
+      return (o.support ?? []).filter((s) => s.status !== "resolved").length;
+    return 0;
+  };
   return (
     <div className="shell">
+      {nav && (
+        <div
+          className="sidebar-backdrop"
+          aria-hidden="true"
+          onClick={() => setNav(false)}
+        />
+      )}
       <aside className={nav ? "sidebar open" : "sidebar"}>
-        <Brand />
-        <p className="nav-label">WORKSPACE</p>
-        <nav>
-          {sections.map(([label, Icon]) => (
-            <button
-              key={label}
-              className={page === label ? "nav-item chosen" : "nav-item"}
-              onClick={() => go(label)}
-            >
-              <Icon size={19} />
-              {label}
-              {label === "Boat registrations" &&
-                !!o?.boats.filter((b) => b.verification_status === "submitted")
-                  .length && (
-                  <span className="count">
-                    {
-                      o.boats.filter(
-                        (b) => b.verification_status === "submitted",
-                      ).length
-                    }
-                  </span>
-                )}
-            </button>
+        <div className="sidebar-top">
+          <Brand />
+          <button
+            type="button"
+            className="icon-button mobile-close"
+            aria-label="Close navigation"
+            onClick={() => setNav(false)}
+          >
+            <X size={18} />
+          </button>
+        </div>
+        <nav aria-label="Main navigation">
+          {navGroups.map((group) => (
+            <div className="nav-group" key={group.title}>
+              <p className="nav-label">{group.title}</p>
+              {group.items.map(([label, Icon]) => {
+                const count = badgeCount(label);
+                return (
+                  <button
+                    key={label}
+                    aria-label={label}
+                    className={page === label ? "nav-item chosen" : "nav-item"}
+                    onClick={() => go(label)}
+                  >
+                    <Icon size={18} />
+                    <span className="nav-text">{label}</span>
+                    {count > 0 && (
+                      <span className="count" aria-hidden="true">
+                        {count}
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
           ))}
         </nav>
-        <div className="sidebar-bottom">
-          <span className="port-icon">
-            <Anchor size={20} />
-          </span>
-          <div>
-            <strong>Abra de Ilog</strong>
-            <small>Occidental Mindoro, PH</small>
+        <div className="sidebar-footer">
+          <div className="sidebar-bottom">
+            <span className="port-icon">
+              <Anchor size={19} />
+            </span>
+            <div>
+              <strong>Abra de Ilog</strong>
+              <small>Occidental Mindoro, PH</small>
+            </div>
           </div>
-        </div>
-        <div className="profile">
-          <div className="avatar">{name.slice(0, 2).toUpperCase()}</div>
-          <div>
-            <strong>{name}</strong>
-            <small>
-              {configured ? "Administrator" : "Configuration required"}
-            </small>
+          <div className="profile">
+            <div className="avatar">{name.slice(0, 2).toUpperCase()}</div>
+            <div className="profile-meta">
+              <strong>{name}</strong>
+              <small>
+                {configured ? "Administrator" : "Configuration required"}
+              </small>
+            </div>
+            {configured && (
+              <button
+                aria-label="Sign out"
+                className="icon-button"
+                onClick={() => supabase.auth.signOut()}
+              >
+                <LogOut size={17} />
+              </button>
+            )}
           </div>
-          {configured && (
-            <button
-              aria-label="Sign out"
-              className="icon-button"
-              onClick={() => supabase.auth.signOut()}
-            >
-              <LogOut size={17} />
-            </button>
-          )}
         </div>
       </aside>
       <div className="workspace">
@@ -617,6 +704,20 @@ function Console({
             <strong>{page}</strong>
           </div>
           <div className="header-right">
+            <div className="quick-jump">
+              <Compass size={15} />
+              <select
+                aria-label="Quick jump to section"
+                value={page}
+                onChange={(e) => go(e.target.value)}
+              >
+                {sections.map(([label]) => (
+                  <option key={label} value={label}>
+                    Jump to: {label}
+                  </option>
+                ))}
+              </select>
+            </div>
             <span
               className={`workspace-status phase-${live.phase}`}
               role="status"
@@ -652,6 +753,28 @@ function Console({
                   ? "A clear picture of your people, boats, and bookings."
                   : `Review and manage ${page.toLowerCase()} across your workspace.`}
               </p>
+              {page === "Overview" && (
+                <div className="hero-chips">
+                  <span className="hero-chip">
+                    <Ship size={13} />
+                    {configured && o
+                      ? `${o.boats.filter((b) => b.active && b.verification_status === "approved").length} Active Vessels`
+                      : "Fleet Monitoring"}
+                  </span>
+                  <span className="hero-chip">
+                    <ShieldCheck size={13} />
+                    {configured && o
+                      ? `${badgeCount("Boat registrations")} Pending Verifications`
+                      : "Safety & Permit Gate"}
+                  </span>
+                  <span className="hero-chip">
+                    <LifeBuoy size={13} />
+                    {configured && o
+                      ? `${badgeCount("Support")} Open Support Cases`
+                      : "Passenger Support Desk"}
+                  </span>
+                </div>
+              )}
             </div>
             <div className="heading-actions">
               <button
@@ -773,6 +896,7 @@ function Console({
                         : "—",
                     icon: Wallet,
                     caption: "Booking value · includes unpaid requests",
+                    target: "Bookings",
                   },
                   {
                     label: "Verified collections",
@@ -788,6 +912,7 @@ function Console({
                         : "—",
                     icon: CreditCard,
                     caption: "Provider-confirmed payments only",
+                    target: "Payments",
                   },
                   {
                     label: "Active boats",
@@ -803,6 +928,7 @@ function Console({
                         : "—",
                     icon: Ship,
                     caption: "Approved and operating",
+                    target: "Boat registrations",
                   },
                   {
                     label: "Registered people",
@@ -811,9 +937,14 @@ function Console({
                     caption: o
                       ? `${o.profiles.filter((r) => r.role === "passenger").length} passengers · ${o.profiles.filter((r) => r.role === "owner").length} operators`
                       : "Passengers and boat operators",
+                    target: "People",
                   },
-                ].map(({ label, value, icon: Icon, caption }) => (
-                  <section key={label} className="metric">
+                ].map(({ label, value, icon: Icon, caption, target }) => (
+                  <section
+                    key={label}
+                    className="metric clickable-metric"
+                    onClick={() => go(target)}
+                  >
                     <div>
                       <span>{label}</span>
                       <Icon size={20} />
@@ -821,6 +952,51 @@ function Console({
                     <strong>{value}</strong>
                     <small>{caption}</small>
                   </section>
+                ))}
+              </div>
+              <div className="priority-strip">
+                {[
+                  {
+                    title: "Boat Approvals",
+                    count: configured ? badgeCount("Boat registrations") : "—",
+                    sub: "Vessels awaiting permit review",
+                    tone: badgeCount("Boat registrations") > 0 ? "warn" : "good",
+                    dest: "Boat registrations",
+                  },
+                  {
+                    title: "Active Reservations",
+                    count: configured ? badgeCount("Bookings") : "—",
+                    sub: "Pending confirmation or payment",
+                    tone: badgeCount("Bookings") > 0 ? "warn" : "neutral",
+                    dest: "Bookings",
+                  },
+                  {
+                    title: "Owner Payout Queue",
+                    count: configured ? badgeCount("Payouts") : "—",
+                    sub: "Ready for bank settlement",
+                    tone: badgeCount("Payouts") > 0 ? "warn" : "good",
+                    dest: "Payouts",
+                  },
+                  {
+                    title: "Support Desk",
+                    count: configured ? badgeCount("Support") : "—",
+                    sub: "Open & investigating tickets",
+                    tone: badgeCount("Support") > 0 ? "bad" : "good",
+                    dest: "Support",
+                  },
+                ].map((item) => (
+                  <button
+                    key={item.title}
+                    type="button"
+                    className={`priority-card tone-${item.tone}`}
+                    onClick={() => go(item.dest)}
+                  >
+                    <div className="priority-head">
+                      <span>{item.title}</span>
+                      <strong className="priority-num">{item.count}</strong>
+                    </div>
+                    <small>{item.sub}</small>
+                  </button>
                 ))}
               </div>
               <div className="dashboard-grid">
@@ -874,6 +1050,65 @@ function Console({
                       );
                     })}
                   </div>
+                  {configured && o && (
+                    <div className="status-breakdown">
+                      {[
+                        {
+                          label: "Confirmed & Completed",
+                          count: o.bookings.filter((b) =>
+                            ["confirmed", "completed"].includes(
+                              bookingViewStatus(b),
+                            ),
+                          ).length,
+                          color: "#16a34a",
+                        },
+                        {
+                          label: "Pending / Awaiting Payment",
+                          count: o.bookings.filter((b) =>
+                            [
+                              "pending_owner_confirmation",
+                              "awaiting_payment",
+                            ].includes(bookingViewStatus(b)),
+                          ).length,
+                          color: "#d97706",
+                        },
+                        {
+                          label: "Cancelled / Expired / Refunded",
+                          count: o.bookings.filter((b) =>
+                            [
+                              "cancelled",
+                              "rejected",
+                              "expired",
+                              "refunded",
+                              "refund_pending",
+                            ].includes(bookingViewStatus(b)),
+                          ).length,
+                          color: "#64748b",
+                        },
+                      ].map((row) => {
+                        const total = Math.max(1, o.bookings.length);
+                        const pct = Math.round((row.count / total) * 100);
+                        return (
+                          <div key={row.label} className="breakdown-item">
+                            <div className="breakdown-label">
+                              <span>{row.label}</span>
+                              <strong>
+                                {row.count} ({o.bookings.length ? pct : 0}%)
+                              </strong>
+                            </div>
+                            <div className="breakdown-bar">
+                              <div
+                                style={{
+                                  width: `${o.bookings.length ? pct : 0}%`,
+                                  background: row.color,
+                                }}
+                              />
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
                 </section>
                 <section className="panel review-panel">
                   <div className="panel-heading">
