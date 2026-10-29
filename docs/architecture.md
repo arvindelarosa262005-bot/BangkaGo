@@ -1,0 +1,17 @@
+# Architecture
+
+Clients use only a project publishable key plus the user's Auth session. The native session adapter chunks values into platform-encrypted SecureStore; browser sessions use same-origin storage and require standard XSS defenses. Admin access requires a database profile whose role is admin and account is active. User registration metadata is permitted to select only passenger or owner; a trigger maps every other role to passenger. The first administrator is provisioned by an authorized database operator.
+
+All exposed tables enable RLS. Mutations to booking, boat approval, fees, payments and payouts are denied as direct client table writes. Reviewed public SECURITY INVOKER RPC wrappers call private, narrowly granted SECURITY DEFINER implementations with an empty search path, ownership checks and active-account checks. The private schema is not exposed through PostgREST. Financial verification RPCs are service-role only.
+
+Booking creation locks the boat row, then schedule, then computes the active reservations. Every schedule has exactly one booking model. Schedule creation takes the same boat lock before checking overlapping intervals, including cross-mode overlaps. The API roles have no direct schedule writes. Capacity, fare and fee snapshots are written in one transaction; passenger/idempotency uniqueness and a transaction advisory lock make retries safe. Request holds last up to 30 minutes or departure, whichever comes first. Operator acceptance does not renew the reservation.
+
+Expiry is checked on every new reservation, owner acceptance and checkout. Public availability excludes expired holds even before the expiry worker runs. A scheduled authenticated expiry worker normalizes stored statuses. Provider checkout sessions must also be expired/reconciled operationally; PayMongo sessions do not expire automatically. A paid event received after the reservation eligibility ends creates a full-refund request and does not reclaim seats.
+
+Payment confirmation verifies a raw-body signature, payment environment and canonical provider API response, amount, currency and local checkout association. A unique event key and one commission row per booking prevent duplicate ledger changes. Checkout/refund claims are durable; an ambiguous provider timeout requires investigation instead of another charge/refund. No client-provided payment status is trusted.
+
+Operator settlement is an explicitly authorized manual reconciliation record. It does not initiate a transfer or claim automatic GCash splitting. Only completed trips qualify, and financial history is retained. Processing fees are unknown until merchant reconciliation and are not represented as settled profit.
+
+In-app notifications are stored by backend operations. Push token registration is optional; production delivery/reminders need a worker, EAS credentials, retry receipts, opt-out handling and scheduling. Protected booking contacts use a participant-only RPC. Support tickets avoid exposing documents or contact details publicly. Messaging is deliberately not implemented; the provided contact/support workflows are used instead.
+
+Scalability: index ownership/search paths, use server-side pagination/aggregates when pilot volume grows, validate max API rows, schedule rate-limit retention cleanup and monitor ledger anomalies. Current admin tables fetch a bounded API result set and paginate/filter in the browser; large deployments require server-side report pagination and aggregates before totals can be considered complete.

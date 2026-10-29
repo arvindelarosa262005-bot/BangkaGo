@@ -1,0 +1,598 @@
+/* Maritime identity and readable operations screens. */
+:root {
+  font-size: 15px;
+}
+button {
+  min-height: 44px;
+  border-radius: 11px;
+}
+input,
+select,
+textarea {
+  min-height: 44px;
+}
+input,
+textarea {
+  transition:
+    border-color 0.18s,
+    box-shadow 0.18s;
+}
+input:focus,
+textarea:focus,
+select:focus {
+  border-color: #75a7eb;
+  box-shadow: 0 0 0 3px #1769e00d;
+}
+.sidebar {
+  box-shadow: 4px 0 22px #0b2d5903;
+}
+.nav-item {
+  font-size: 13px;
+  min-height: 46px;
+  margin-bottom: 1px;
+}
+.nav-item.chosen {
+  background: #eaf3ff;
+  box-shadow: inset 0 0 0 1px #dcebff;
+}
+.nav-label {
+  letter-spacing: 2px;
+}
+.brand small {
+  letter-spacing: 1.9px;
+}
+.page-heading h1 {
+  font-size: 31px;
+}
+.page-heading > div > p:last-child {
+  font-size: 13px;
+  line-height: 1.8;
+}
+.panel {
+  border-radius: 16px;
+  box-shadow: 0 4px 20px #0b2d5903;
+}
+.panel-heading {
+  padding: 24px;
+}
+h2 {
+  font-size: 16px;
+}
+.panel-heading p {
+  font-size: 12px;
+}
+.metric {
+  border-radius: 16px;
+  padding: 23px;
+  overflow: hidden;
+  box-shadow: 0 6px 24px #0b2d5908;
+  border-top: 3px solid #1769e01f;
+  transition:
+    transform 0.18s ease,
+    box-shadow 0.18s ease,
+    border-color 0.18s ease;
+}
+.metric:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 12px 28px #0b2d5912;
+  border-top-color: #1769e0;
+}
+.metric > div {
+  font-size: 12px;
+  font-weight: 600;
+}
+.metric > div svg {
+  color: #1769e0;
+  background: linear-gradient(135deg, #eaf3ff, #dbeafe);
+  width: 36px;
+  height: 36px;
+  padding: 8px;
+  border-radius: 11px;
+}
+.metric > strong {
+  font-size: 30px;
+  letter-spacing: -1.2px;
+  margin-top: 12px;
+}
+.metric small {
+  font-size: 10px;
+  line-height: 1.8;
+}
+.metrics {
+  gap: 18px;
+}
+.date-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.date-presets {
+  display: inline-flex;
+  background: #eef4fc;
+  padding: 3px;
+  border-radius: 10px;
+  gap: 2px;
+}
+.preset-chip {
+  min-height: 30px;
+  padding: 5px 11px;
+  border-radius: 8px;
+  font-size: 11px;
+  font-weight: 600;
+  background: transparent;
+  color: #475569;
+  border: 1px solid transparent;
+  text-transform: capitalize;
+}
+.preset-chip.active {
+  background: white;
+  color: #0b2d59;
+  border-color: #dbe7f6;
+  box-shadow: 0 2px 6px #0b2d590a;
+}
+.status-pills {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 12px 24px;
+  border-bottom: 1px solid var(--border);
+  background: #fbfdff;
+}
+.status-pills .preset-chip {
+  background: white;
+  border-color: #e2eaf5;
+}
+.status-pills .preset-chip.active {
+  background: #eaf3ff;
+  color: #1769e0;
+  border-color: #bfd9fc;
+}
+.badge.warn {
+  background: #fff8eb;
+  color: #b45309;
+}
+.chart-bar {
+  background: linear-gradient(180deg, #3b82f6 0%, #1769e0 100%);
+  box-shadow: 0 4px 12px #1769e026;
+  transition: height 0.25s ease;
+}
+.overview-heading {
+  position: relative;
+  background: linear-gradient(135deg, #0b2d59 0%, #124382 60%, #1769e0 100%);
+  padding: 34px;
+  border-radius: 20px;
+  min-height: 192px;
+  color: white;
+  isolation: isolate;
+  overflow: hidden;
+  align-items: center;
+  box-shadow: 0 14px 36px #0b2d591f;
+}
+.configuration {
+  border-radius: 14px;
+  background: #eef5ff;
+  padding: 18px 22px;
+  margin-bottom: 27px;
+}
+.configuration strong {
+  font-size: 13px;
+}
+.configuration p {
+  font-size: 12px;
+  line-height: 1.8;
+}
+.table-toolbar {
+  padding: 22px 24px;
+}
+.search {
+  border-radius: 10px;
+  background: #fbfdff;
+}
+.search input {
+  font-size: 13px;
+  min-height: 42px;
+  background: transparent;
+}
+.table-toolbar > span {
+  font-size: 12px;
+}
+th {
+  font-size: 11px;
+  padding: 16px 24px;
+  letter-spacing: 0.3px;
+}
+td {
+  font-size: 12px;
+  padding: 17px 24px;
+}
+tbody tr:hover {
+  background: #fafcff;
+}
+.badge {
+  padding: 5px 9px;
+  font-size: 11px;
+  border-radius: 7px;
+}
+.empty {
+  min-height: 230px;
+  padding: 34px 24px;
+}
+.empty-icon {
+  height: 60px;
+  width: 60px;
+  border-radius: 19px;
+}
+.empty h3 {
+  font-size: 14px;
+  margin-top: 16px;
+}
+.empty p {
+  font-size: 12px;
+  line-height: 1.8;
+}
+.review-number span {
+  font-size: 12px;
+}
+.review-info {
+  font-size: 11px;
+  line-height: 1.8;
+}
+.review-panel > button {
+  font-size: 12px;
+  min-height: 45px;
+  border-radius: 10px;
+}
+.chart-column small {
+  font-size: 10px;
+}
+.finance-strip small {
+  font-size: 11px;
+}
+.finance-strip strong {
+  font-size: 22px;
+}
+.overview-heading {
+  position: relative;
+  background: #0b2d59;
+  padding: 32px;
+  border-radius: 19px;
+  min-height: 188px;
+  color: white;
+  isolation: isolate;
+  overflow: hidden;
+  align-items: center;
+}
+.overview-heading > div {
+  position: relative;
+  z-index: 1;
+}
+.overview-heading h1 {
+  color: white;
+  font-size: 33px;
+  max-width: 570px;
+}
+.overview-heading .eyebrow {
+  color: #9cc9ff;
+  font-size: 9px;
+  letter-spacing: 2px;
+}
+.overview-heading > div > p:last-child {
+  color: #c7d8ee;
+  max-width: 450px;
+  font-size: 12px;
+}
+.overview-heading .heading-actions {
+  align-self: flex-end;
+  margin-bottom: 4px;
+}
+.overview-heading .secondary {
+  background: #fffffff2;
+  border-color: #fff;
+  color: #0b2d59;
+  box-shadow: 0 3px 12px #0001;
+}
+.overview-art {
+  position: absolute;
+  right: 0;
+  top: 0;
+  height: 100%;
+  width: 43%;
+  object-fit: cover;
+  opacity: 0.33;
+  mask-image: linear-gradient(to right, transparent, #000 40%);
+  z-index: -1;
+}
+.workspace-status {
+  font-size: 11px;
+  border: 1px solid #e6edf7;
+  padding: 7px 10px;
+  border-radius: 30px;
+  background: #fbfdff;
+}
+.phase-live {
+  color: #1769e0;
+}
+.phase-live i {
+  box-shadow: 0 0 0 3px #1769e017;
+}
+.phase-offline {
+  color: #dc2626;
+  background: #fff7f7;
+}
+.phase-offline i {
+  background: #dc2626;
+}
+.phase-reconnecting,
+.phase-connecting,
+.phase-needs_setup {
+  color: #ac680d;
+}
+.phase-reconnecting i,
+.phase-connecting i,
+.phase-needs_setup i {
+  background: #d97706;
+}
+.inbox-trigger {
+  position: relative;
+}
+.unread-count {
+  position: absolute;
+  right: -2px;
+  top: -2px;
+  background: #1769e0;
+  color: white;
+  border: 2px solid white;
+  min-width: 18px;
+  height: 18px;
+  border-radius: 10px;
+  font-size: 9px;
+  display: grid;
+  place-items: center;
+}
+.inbox-dialog {
+  max-width: 530px;
+}
+.inbox-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 17px 15px;
+  border-radius: 12px;
+  border: 1px solid #e7eef8;
+  margin-top: 12px;
+}
+.inbox-note.unread {
+  background: #f3f8ff;
+  border-color: #dceaff;
+}
+.inbox-note > div {
+  flex: 1;
+}
+.inbox-note strong {
+  font-size: 13px;
+  color: #0b2d59;
+}
+.inbox-note p {
+  font-size: 12px;
+  margin: 5px 0;
+  overflow-wrap: anywhere;
+}
+.inbox-note small {
+  font-size: 10px;
+  color: #8c9cb1;
+}
+.dialog {
+  border-radius: 20px;
+}
+.dialog-heading h2 {
+  font-size: 22px;
+}
+.dialog dl {
+  gap: 12px;
+}
+.dl-card {
+  background: #f8fbff;
+  border: 1px solid #e6effa;
+  border-radius: 12px;
+  padding: 12px 14px;
+}
+.dialog dt {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+}
+.dialog dd {
+  font-size: 13px;
+  font-weight: 500;
+  color: #0b2d59;
+  margin: 0;
+}
+.history-timeline {
+  display: grid;
+  gap: 10px;
+  margin-top: 10px;
+}
+.history-item {
+  background: #f8fbff;
+  border-left: 3px solid #1769e0;
+  border-radius: 0 10px 10px 0;
+  padding: 11px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.history-item strong {
+  font-size: 12px;
+  color: #0b2d59;
+  text-transform: capitalize;
+}
+.history-item span {
+  font-size: 12px;
+  color: #475569;
+}
+.document {
+  padding: 17px 0;
+}
+.document > span {
+  font-size: 12px;
+}
+.padded p,
+.padded li {
+  font-size: 13px;
+}
+.login-story {
+  position: relative;
+  overflow: hidden;
+  gap: 24px;
+}
+.login-story .brand {
+  z-index: 1;
+}
+.login-story > div,
+.login-story > small {
+  position: relative;
+  z-index: 1;
+}
+.login-illustration {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  width: 100%;
+  height: 45%;
+  object-fit: cover;
+  opacity: 0.22;
+  mask-image: linear-gradient(transparent, #000 38%);
+}
+.login-story h1 {
+  font-size: 44px;
+  letter-spacing: -1.4px;
+}
+.login-form h2 {
+  font-size: 30px;
+  letter-spacing: -0.8px;
+}
+.login-form input {
+  min-height: 50px;
+}
+.login-form label {
+  font-size: 13px;
+}
+.login-form > button {
+  min-height: 48px;
+}
+.google-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  background: white;
+  color: #0b2d59;
+  border: 1px solid #dbe5f3;
+  box-shadow: 0 2px 8px #0b2d5908;
+  font-weight: 600;
+}
+.google-btn:hover {
+  background: #f8fbff;
+  border-color: #b9d3f5;
+}
+.login-form > small {
+  font-size: 11px;
+}
+.login-form > p {
+  font-size: 13px;
+}
+@media (max-width: 1120px) {
+  .overview-heading {
+    padding: 28px;
+    gap: 18px;
+    flex-wrap: wrap;
+  }
+  .overview-heading h1 {
+    font-size: 29px;
+  }
+  .overview-heading .heading-actions {
+    margin: 0;
+  }
+  .overview-art {
+    width: 50%;
+  }
+  .metric {
+    padding: 20px;
+  }
+}
+@media (max-width: 760px) {
+  .overview-heading {
+    min-height: 210px;
+    padding: 24px;
+  }
+  .overview-heading h1 {
+    font-size: 28px;
+  }
+  .overview-heading > div > p:last-child {
+    max-width: 270px;
+  }
+  .overview-art {
+    width: 75%;
+    opacity: 0.22;
+  }
+  .overview-heading .heading-actions {
+    align-self: initial;
+  }
+  .metric {
+    padding: 16px;
+  }
+  .metric > div {
+    font-size: 11px;
+  }
+  .metric > strong {
+    font-size: 26px;
+  }
+  .metric small {
+    font-size: 9px;
+  }
+  .metric > div svg {
+    width: 28px;
+    height: 28px;
+    padding: 6px;
+  }
+  .page-heading h1 {
+    font-size: 27px;
+  }
+  .panel-heading {
+    padding: 20px;
+  }
+  .configuration {
+    padding: 16px;
+  }
+  .configuration strong {
+    font-size: 12px;
+  }
+  .configuration p {
+    font-size: 11px;
+  }
+  .table-toolbar {
+    padding: 15px;
+  }
+  .finance-strip small {
+    font-size: 9px;
+  }
+  .finance-strip strong {
+    font-size: 18px;
+  }
+  .login-story h1 {
+    font-size: 29px;
+  }
+  .login-illustration {
+    height: 100%;
+    left: 20%;
+    width: 80%;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  * {
+    scroll-behavior: auto !important;
+    transition: none !important;
+  }
+}

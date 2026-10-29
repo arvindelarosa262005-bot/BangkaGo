@@ -1,0 +1,20 @@
+{
+  "expo": {
+    "name": "BangkaGo",
+    "slug": "bangkago",
+    "scheme": "bangkago",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "plugins": [
+      "expo-router",
+      "expo-secure-store",
+      "expo-notifications",
+      "expo-document-picker"
+    ],
+    "android": { "package": "ph.bangkago.app" },
+    "ios": { "bundleIdentifier": "ph.bangkago.app" },
+    "experiments": { "typedRoutes": false },
+    "web": { "bundler": "metro" }
+  }
+}

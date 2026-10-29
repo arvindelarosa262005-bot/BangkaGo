@@ -1,0 +1,42 @@
+{
+  "name": "bangkago",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:admin": "npm run dev -w @bangkago/admin",
+    "dev:mobile": "npm run start -w @bangkago/mobile",
+    "dev:go": "npm run start:go -w @bangkago/mobile",
+    "build": "npm run build -w @bangkago/admin",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "vitest run",
+    "test:db": "node scripts/test-database.mjs",
+    "db:start": "supabase start",
+    "db:reset": "supabase db reset",
+    "test:hosted": "node scripts/test-hosted.mjs",
+    "typecheck:edge": "tsc --project supabase/functions/tsconfig.json --noEmit",
+    "format": "prettier --write apps packages tests scripts docs README.md *.json *.ts supabase/functions",
+    "format:check": "prettier --check apps packages tests scripts docs README.md *.json *.ts supabase/functions",
+    "test:browser": "playwright test"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "0.3.14",
+    "@playwright/test": "1.64.1",
+    "@types/node": "24.10.0",
+    "prettier": "3.8.1",
+    "supabase": "2.101.0",
+    "typescript": "5.9.3",
+    "vite": "8.3.5",
+    "vitest": "5.0.5"
+  },
+  "overrides": {
+    "vite": "8.3.5",
+    "decode-uri-component": "0.5.1",
+    "image-size": "2.0.4",
+    "postcss": "8.5.32"
+  },
+  "type": "module"
+}

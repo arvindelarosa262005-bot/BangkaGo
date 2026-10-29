@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.expo/
+.env
+.env.local
+.env.*.local
+coverage/
+supabase/.temp/
+supabase/.branches/
+*.log
+test-results/

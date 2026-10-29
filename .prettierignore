@@ -1,0 +1,13 @@
+node_modules
+dist
+.expo
+package-lock.json
+audit-report.json
+expo-compatible.json
+zod-versions.json
+supabase/migrations
+supabase/schema.sql
+supabase/operations.sql
+supabase/config.toml
+test-results
+playwright-report
