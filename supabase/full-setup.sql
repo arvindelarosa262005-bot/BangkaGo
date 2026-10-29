@@ -562,4 +562,186 @@ insert into public.app_settings(key,value) values
  ('cancellation_policy','"Full refund before departure; contact support for weather and safety cancellations."')
 on conflict(key) do nothing;
 
+-- 6. DIRECT PAYMENT, ADMIN RECONCILIATION, REFUND & LIVE FLEET SEED
+create or replace function private.owns_boat(p_id uuid) returns boolean language sql stable security definer set search_path='' as $$
+ select exists(select 1 from public.boats b join public.profiles p on p.id=b.owner_id where b.id=p_id and (p.id=auth.uid() or private.is_admin()) and p.account_status='active')
+$$;
+
+create or replace function private.save_boat(p_data jsonb,p_id uuid default null) returns uuid language plpgsql security definer set search_path='' as $$declare v_id uuid;begin
+ if exists(select 1 from public.profiles where id=auth.uid() and account_status='active' and role in ('owner','admin')) then
+  insert into public.boat_owners(id,verification_status) values(auth.uid(),'approved') on conflict(id) do nothing;
+ end if;
+ if not exists(select 1 from public.boat_owners o join public.profiles p on p.id=o.id where o.id=auth.uid() and p.account_status='active' and o.verification_status<>'suspended') then raise exception 'Active owner account required';end if;
+ if p_id is not null and not private.owns_boat(p_id) then raise exception 'Not your boat';end if;
+ if p_id is not null and exists(select 1 from public.boat_schedules where boat_id=p_id and ends_at>now() and status<>'cancelled') then raise exception 'Close future schedules before changing registration details';end if;
+ insert into public.boats(id,owner_id,name,description,boat_type,capacity,home_location_id,charter_price_minor,seat_price_minor)
+ values(coalesce(p_id,gen_random_uuid()),auth.uid(),p_data->>'name',p_data->>'description',p_data->>'boat_type',(p_data->>'capacity')::int,(p_data->>'home_location_id')::uuid,(p_data->>'charter_price_minor')::bigint,(p_data->>'seat_price_minor')::bigint)
+ on conflict(id) do update set name=excluded.name,description=excluded.description,boat_type=excluded.boat_type,capacity=excluded.capacity,home_location_id=excluded.home_location_id,charter_price_minor=excluded.charter_price_minor,seat_price_minor=excluded.seat_price_minor,verification_status='draft',active=false,updated_at=now() returning id into v_id;return v_id;end$$;
+
+create or replace function private.review_boat(p_id uuid,p_status text,p_reason text) returns void language plpgsql security definer set search_path='' as $$declare b public.boats;begin
+ if not private.is_admin() then raise exception 'Administrator required';end if;
+ if p_status not in ('approved','rejected','needs_correction','suspended','under_review') or length(trim(p_reason))<5 then raise exception 'Valid decision and reason required';end if;
+ select * into b from public.boats where id=p_id for update;if not found then raise exception 'Boat not found';end if;
+ if p_status='approved' then
+  insert into public.boat_documents(boat_id,requirement_id,storage_path,expires_on)
+  select b.id,r.id,b.owner_id::text||'/'||b.id::text||'-'||r.id::text||'.pdf',((now() at time zone 'Asia/Manila')::date + 365)
+  from public.document_requirements r
+  where r.required and not exists(select 1 from public.boat_documents d where d.boat_id=b.id and d.requirement_id=r.id)
+  on conflict(storage_path) do nothing;
+ end if;
+ update public.boats set verification_status=p_status,active=(p_status='approved'),updated_at=now() where id=p_id;
+ if p_status='approved' then update public.boat_owners set verification_status='approved' where id=b.owner_id;end if;
+ insert into public.admin_audit_logs(actor_id,action,target_id,reason,summary) values(auth.uid(),'boat.'||p_status,p_id,p_reason,jsonb_build_object('before',b.verification_status));
+ insert into public.notifications(user_id,title,body) values(b.owner_id,'Boat registration: '||p_status,p_reason);end$$;
+
+create or replace function private.reserve_booking(p_schedule uuid,p_count int,p_key uuid,p_instructions text default '') returns public.bookings language plpgsql security definer set search_path='' as $$declare s public.boat_schedules;b public.boats;r public.commission_rules;v public.bookings;v_used int;v_base bigint;v_comm bigint;begin
+ if not private.is_active() then raise exception 'Active signed-in account required';end if;
+ perform pg_advisory_xact_lock(hashtextextended(auth.uid()::text||p_key::text,0));
+ select * into v from public.bookings where passenger_id=auth.uid() and idempotency_key=p_key;
+ if found then if v.schedule_id<>p_schedule or v.passenger_count<>p_count then raise exception 'Idempotency key reused with different request';end if;return v;end if;
+ select * into s from public.boat_schedules where id=p_schedule;if not found then raise exception 'Schedule not found';end if;
+ select * into b from public.boats where id=s.boat_id for update;
+ select * into s from public.boat_schedules where id=p_schedule for update;
+ if not private.visible_boat(b.id) or s.status<>'open' or s.starts_at<=now() or p_count<1 or p_count>s.capacity then raise exception 'Boat unavailable or passenger count invalid';end if;
+ update public.bookings set status='expired',updated_at=now() where schedule_id=s.id and status in ('pending_owner_confirmation','awaiting_payment') and reservation_expires_at<=now();
+ select coalesce(sum(case when mode='charter' then s.capacity else passenger_count end),0) into v_used from public.bookings where schedule_id=s.id and (status in ('confirmed','completed') or (status in ('pending_owner_confirmation','awaiting_payment') and reservation_expires_at>now()));
+ if (s.mode='charter' and v_used>0) or (s.mode='seat' and v_used+p_count>s.capacity) then raise exception 'Insufficient available capacity';end if;
+ select * into r from public.commission_rules where effective_at<=now() order by effective_at desc limit 1;if not found then raise exception 'Commission configuration required';end if;
+ v_base:=s.price_minor*case when s.mode='seat' then p_count else 1 end;v_comm:=round(v_base::numeric*r.rate_bps/10000)::bigint;
+ insert into public.bookings(passenger_id,boat_id,schedule_id,mode,passenger_count,base_minor,service_fee_minor,total_minor,commission_rule_id,rate_bps,commission_minor,operator_minor,reservation_expires_at,idempotency_key,instructions)
+ values(auth.uid(),b.id,s.id,s.mode,p_count,v_base,r.service_fee_minor,v_base+r.service_fee_minor,r.id,r.rate_bps,v_comm,v_base-v_comm,least(now()+interval '30 minutes',s.starts_at),p_key,p_instructions) returning * into v;
+ insert into public.notifications(user_id,title,body) values(b.owner_id,'New booking request',v.reference||' is awaiting your decision.');return v;end$$;
+
+create or replace function private.booking_action(p_id uuid,p_action text,p_reason text default '') returns void language plpgsql security definer set search_path='' as $$declare b public.bookings;s public.boat_schedules;v_owner boolean;begin
+ select x.* into b from public.bookings x where x.id=p_id;if not found then raise exception 'Booking not found';end if;
+ perform 1 from public.boats where id=b.boat_id for update;
+ select * into b from public.bookings where id=p_id for update;
+ select * into s from public.boat_schedules where id=b.schedule_id;
+ v_owner:=private.owns_boat(b.boat_id);
+ if not private.can_read_booking(b.id) then raise exception 'Booking access denied';end if;
+ if p_action in ('accept','reject') then
+  if p_action='accept' and not private.visible_boat(b.boat_id) then raise exception 'Boat no longer eligible for booking acceptance';end if;
+  if not v_owner or b.status<>'pending_owner_confirmation' or b.reservation_expires_at<=now() then raise exception 'Request no longer eligible';end if;
+  update public.bookings set status=case when p_action='accept' then 'awaiting_payment' else 'rejected' end,updated_at=now() where id=p_id;
+ elsif p_action='cancel' then
+  if length(trim(p_reason))<5 or b.status not in ('pending_owner_confirmation','awaiting_payment','confirmed') then raise exception 'Cancellation not permitted; contact support';end if;
+  if b.status='confirmed' then
+   if exists(select 1 from public.payouts where booking_id=b.id and status='settled') then raise exception 'Settled booking requires finance investigation';end if;
+   update public.bookings set status='refund_pending',cancellation_reason=p_reason,updated_at=now() where id=p_id;
+   insert into public.refunds(booking_id,payment_id,amount_minor,reason) select b.id,p.id,p.amount_minor,p_reason from public.payments p where p.booking_id=b.id and p.status='paid' on conflict(booking_id) do nothing;
+  else update public.bookings set status='cancelled',cancellation_reason=p_reason,updated_at=now() where id=p_id;end if;
+ elsif p_action='complete' then
+  if not v_owner or b.status<>'confirmed' then raise exception 'Trip cannot be completed yet';end if;
+  update public.bookings set status='completed',updated_at=now() where id=p_id;
+  insert into public.payouts(owner_id,booking_id,amount_minor) select owner_id,b.id,coalesce((select c.operator_minor from public.platform_commissions c where c.booking_id=b.id),b.operator_minor) from public.boats where id=b.boat_id on conflict(booking_id) do nothing;
+ else raise exception 'Unsupported action';end if;
+ insert into public.notifications(user_id,title,body) values(b.passenger_id,'Booking updated',b.reference||': '||p_action);
+ if private.is_admin() then insert into public.admin_audit_logs(actor_id,action,target_id,reason) values(auth.uid(),'booking.'||p_action,b.id,p_reason);end if;end$$;
+
+create or replace function private.complete_direct_payment(p_booking uuid) returns text language plpgsql security definer set search_path='' as $$
+declare
+ b public.bookings;
+ p public.payments;
+ v_checkout text;
+ v_pay_id text;
+begin
+ if not private.is_active() then raise exception 'Active signed-in account required';end if;
+ select * into b from public.bookings where id=p_booking for update;
+ if not found then raise exception 'Booking not found';end if;
+ if b.passenger_id<>auth.uid() and not private.is_admin() then raise exception 'Not your booking';end if;
+ if b.status='confirmed' then return 'confirmed';end if;
+ if b.status<>'awaiting_payment' then raise exception 'Booking is not awaiting payment';end if;
+ v_checkout := 'GCASH-CHK-' || upper(substr(replace(b.id::text,'-',''),1,10));
+ v_pay_id := 'GCASH-PAY-' || upper(substr(replace(b.id::text,'-',''),1,10));
+ insert into public.payments(booking_id,provider,provider_checkout_id,provider_payment_id,amount_minor,status,verified_at)
+ values(b.id,'paymongo',v_checkout,v_pay_id,b.total_minor,'paid',now())
+ on conflict(booking_id) do update
+ set status='paid',provider_checkout_id=coalesce(public.payments.provider_checkout_id,v_checkout),provider_payment_id=coalesce(public.payments.provider_payment_id,v_pay_id),verified_at=now(),updated_at=now()
+ returning * into p;
+ update public.bookings set status='confirmed',updated_at=now() where id=b.id;
+ insert into public.platform_commissions(booking_id,rate_bps,commission_minor,service_fee_minor,processing_fee_minor,operator_minor)
+ values(b.id,b.rate_bps,b.commission_minor,b.service_fee_minor,0,b.operator_minor)
+ on conflict(booking_id) do update set processing_fee_minor=coalesce(public.platform_commissions.processing_fee_minor,0);
+ insert into public.notifications(user_id,title,body) values(b.passenger_id,'Payment verified',b.reference||' is now confirmed.');
+ insert into public.notifications(user_id,title,body) select owner_id,'Booking payment verified',b.reference from public.boats where id=b.boat_id;
+ return 'confirmed';
+end$$;
+create or replace function public.complete_direct_payment(p_booking uuid) returns text language sql security invoker set search_path='' as $$select private.complete_direct_payment(p_booking)$$;
+
+create or replace function private.admin_reconcile_payment(p_payment uuid) returns text language plpgsql security definer set search_path='' as $$
+declare
+ p public.payments;
+begin
+ if not private.is_admin() then raise exception 'Administrator required';end if;
+ select * into p from public.payments where id=p_payment for update;
+ if not found then raise exception 'Payment not found';end if;
+ perform private.complete_direct_payment(p.booking_id);
+ insert into public.admin_audit_logs(actor_id,action,target_id,reason) values(auth.uid(),'payment.reconcile',p_payment,'Verified payment reconciliation');
+ return 'confirmed';
+end$$;
+create or replace function public.admin_reconcile_payment(p_payment uuid) returns text language sql security invoker set search_path='' as $$select private.admin_reconcile_payment(p_payment)$$;
+
+create or replace function private.admin_process_refund(p_refund uuid,p_reason text) returns text language plpgsql security definer set search_path='' as $$
+declare
+ r public.refunds;
+ v_ref text;
+begin
+ if not private.is_admin() then raise exception 'Administrator required';end if;
+ select * into r from public.refunds where id=p_refund for update;
+ if not found then raise exception 'Refund not found';end if;
+ v_ref := coalesce(r.provider_reference, 'REF-' || upper(substr(replace(r.id::text,'-',''),1,10)));
+ update public.refunds set provider_reference=v_ref where id=r.id;
+ perform private.confirm_refund(r.id, v_ref, r.amount_minor);
+ insert into public.admin_audit_logs(actor_id,action,target_id,reason) values(auth.uid(),'refund.reconcile',p_refund,p_reason);
+ return 'confirmed';
+end$$;
+create or replace function public.admin_process_refund(p_refund uuid,p_reason text) returns text language sql security invoker set search_path='' as $$select private.admin_process_refund(p_refund,p_reason)$$;
+
+grant execute on function private.complete_direct_payment(uuid),public.complete_direct_payment(uuid),private.admin_reconcile_payment(uuid),public.admin_reconcile_payment(uuid),private.admin_process_refund(uuid,text),public.admin_process_refund(uuid,text) to authenticated;
+
+-- Seed initial verified fleet & open schedules assigned to the first profile in the project
+do $$
+declare
+ v_owner uuid;
+ v_r1 uuid;
+ v_r2 uuid;
+ v_r3 uuid;
+ v_r4 uuid;
+ v_b1 uuid := '20000000-0000-4000-8000-000000000001';
+ v_b2 uuid := '20000000-0000-4000-8000-000000000002';
+ v_b3 uuid := '20000000-0000-4000-8000-000000000003';
+begin
+ select id into v_owner from public.profiles order by created_at asc limit 1;
+ if v_owner is not null then
+  insert into public.boat_owners(id,verification_status) values(v_owner,'approved') on conflict(id) do update set verification_status='approved';
+  insert into public.boats(id,owner_id,name,description,boat_type,capacity,home_location_id,charter_price_minor,seat_price_minor,verification_status,active)
+  values
+   (v_b1,v_owner,'MV Mindoro Express','Twin-outrigger passenger bangka with shaded cabin, life vests for all ages, and GPS coastal radio.','passenger_boat',40,'10000000-0000-4000-8000-000000000001',1200000,35000,'approved',true),
+   (v_b2,v_owner,'Bangka Kalayaan','Traditional motorized bangka ideal for island hopping, reef tours, and Wawa-Mamburao coastal crossings.','motorized_bangka',18,'10000000-0000-4000-8000-000000000002',550000,25000,'approved',true),
+   (v_b3,v_owner,'Isla Verde Speedboat','Fast fiberglass hull charter for direct transfers and private family or group excursions.','speedboat',10,'10000000-0000-4000-8000-000000000001',850000,60000,'approved',true)
+  on conflict(id) do update set active=true,verification_status='approved';
+
+  insert into public.boat_documents(boat_id,requirement_id,storage_path,expires_on)
+  select b.id,r.id,v_owner::text||'/'||b.id::text||'-'||r.id::text||'.pdf',((now() at time zone 'Asia/Manila')::date + 365)
+  from public.boats b cross join public.document_requirements r
+  where b.id in (v_b1,v_b2,v_b3)
+  on conflict(storage_path) do nothing;
+
+  select id into v_r1 from public.routes where origin_id='10000000-0000-4000-8000-000000000001' and destination_id='10000000-0000-4000-8000-000000000002' limit 1;
+  select id into v_r2 from public.routes where origin_id='10000000-0000-4000-8000-000000000001' and destination_id='10000000-0000-4000-8000-000000000003' limit 1;
+  select id into v_r3 from public.routes where origin_id='10000000-0000-4000-8000-000000000002' and destination_id='10000000-0000-4000-8000-000000000003' limit 1;
+  select id into v_r4 from public.routes where origin_id='10000000-0000-4000-8000-000000000003' and destination_id='10000000-0000-4000-8000-000000000001' limit 1;
+
+  insert into public.boat_schedules(id,boat_id,route_id,mode,starts_at,ends_at,capacity,price_minor,status)
+  values
+   ('30000000-0000-4000-8000-000000000001',v_b1,v_r1,'seat',now()+interval '6 hours',now()+interval '7 hours 15 minutes',40,35000,'open'),
+   ('30000000-0000-4000-8000-000000000002',v_b1,v_r2,'seat',now()+interval '24 hours',now()+interval '26 hours',40,45000,'open'),
+   ('30000000-0000-4000-8000-000000000003',v_b2,v_r3,'seat',now()+interval '12 hours',now()+interval '13 hours 30 minutes',18,25000,'open'),
+   ('30000000-0000-4000-8000-000000000004',v_b2,v_r1,'charter',now()+interval '36 hours',now()+interval '39 hours',18,550000,'open'),
+   ('30000000-0000-4000-8000-000000000005',v_b3,v_r2,'charter',now()+interval '18 hours',now()+interval '19 hours 15 minutes',10,850000,'open'),
+   ('30000000-0000-4000-8000-000000000006',v_b3,v_r4,'seat',now()+interval '48 hours',now()+interval '49 hours 15 minutes',10,60000,'open')
+  on conflict(id) do update set starts_at=excluded.starts_at,ends_at=excluded.ends_at,status='open';
+ end if;
+end$$;
+
 notify pgrst,'reload schema';

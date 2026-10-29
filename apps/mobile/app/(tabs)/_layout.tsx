@@ -60,7 +60,10 @@ export default function TabLayout() {
         name="owner"
         options={{
           title: "My boats",
-          href: profile?.role === "owner" ? undefined : null,
+          href:
+            profile?.role === "owner" || profile?.role === "admin"
+              ? undefined
+              : null,
           tabBarIcon: ({ color }) => <Ship size={22} color={color} />,
         }}
       />

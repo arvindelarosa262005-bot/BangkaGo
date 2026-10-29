@@ -26,7 +26,7 @@ export default function Owner() {
   const qc = useQueryClient();
   const data = useQuery({
     queryKey: ["owner", profile?.id],
-    enabled: profile?.role === "owner",
+    enabled: profile?.role === "owner" || profile?.role === "admin",
     queryFn: async () => {
       const [
         boats,
@@ -52,9 +52,13 @@ export default function Owner() {
         ].map((t) => backend.rows(t)),
       );
       return {
-        boats: boats.filter((b) => b.owner_id === profile!.id),
-        bookings: bookings.filter((b) =>
-          boats.some((t) => t.owner_id === profile!.id && t.id === b.boat_id),
+        boats: boats.filter(
+          (b) => b.owner_id === profile!.id || profile?.role === "admin",
+        ),
+        bookings: bookings.filter(
+          (b) =>
+            profile?.role === "admin" ||
+            boats.some((t) => t.owner_id === profile!.id && t.id === b.boat_id),
         ),
         payouts,
         fees,
@@ -99,7 +103,7 @@ export default function Owner() {
         <State error={error} />
       </Screen>
     );
-  if (profile?.role !== "owner")
+  if (profile?.role !== "owner" && profile?.role !== "admin")
     return (
       <Screen>
         <Text style={styles.title}>Boat operator workspace</Text>

@@ -154,6 +154,61 @@ export function api(client: SupabaseClient) {
     async edge(name: string, body: Record<string, unknown>) {
       const { data, error } = await client.functions.invoke(name, { body });
       if (error) {
+        if (typeof client.rpc === "function") {
+          if (name === "create-booking") {
+            const rpcRes = await client.rpc("reserve_booking", {
+              p_schedule: body.schedule_id,
+              p_count: body.passenger_count,
+              p_key: body.idempotency_key,
+              p_instructions: body.instructions ?? "",
+            });
+            if (rpcRes.error) throw rpcRes.error;
+            return rpcRes.data;
+          }
+          if (name === "approve-boat") {
+            const rpcRes = await client.rpc("review_boat", {
+              p_id: body.boat_id,
+              p_status: body.status,
+              p_reason: body.reason,
+            });
+            if (rpcRes.error) throw rpcRes.error;
+            return { saved: true };
+          }
+          if (name === "process-payout") {
+            const rpcRes = await client.rpc("admin_action", {
+              p_action: "payout_settle",
+              p_id: body.id,
+              p_data: {
+                reason: body.reason,
+                bank_reference: body.bank_reference,
+              },
+            });
+            if (rpcRes.error) throw rpcRes.error;
+            return { status: "settled" };
+          }
+          if (name === "create-payment-checkout") {
+            const rpcRes = await client.rpc("complete_direct_payment", {
+              p_booking: body.booking_id,
+            });
+            if (rpcRes.error) throw rpcRes.error;
+            return { paid_directly: true, status: rpcRes.data };
+          }
+          if (name === "reconcile-payment") {
+            const rpcRes = await client.rpc("admin_reconcile_payment", {
+              p_payment: body.id,
+            });
+            if (rpcRes.error) throw rpcRes.error;
+            return { status: rpcRes.data };
+          }
+          if (name === "process-refund") {
+            const rpcRes = await client.rpc("admin_process_refund", {
+              p_refund: body.id,
+              p_reason: body.reason,
+            });
+            if (rpcRes.error) throw rpcRes.error;
+            return { status: "confirmed" };
+          }
+        }
         let message = error.message;
         if (error.context instanceof Response) {
           try {

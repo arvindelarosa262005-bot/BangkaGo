@@ -40,8 +40,11 @@ export default function Bookings() {
         const result = await backend.edge("create-payment-checkout", {
           booking_id: b.id,
         });
+        if (result?.paid_directly) {
+          return "paid_directly";
+        }
         if (
-          !result.checkout_url ||
+          !result?.checkout_url ||
           new URL(result.checkout_url).hostname !== "checkout.paymongo.com"
         )
           throw new Error("Provider returned an invalid checkout link.");
@@ -76,10 +79,12 @@ export default function Bookings() {
         p_reason: reason,
       });
     },
-    onSuccess: () => {
+    onSuccess: (res) => {
       qc.invalidateQueries();
       setMessage(
-        "Updated. Payment status changes only after server verification.",
+        res === "paid_directly"
+          ? "GCash payment verified! Your booking is now confirmed and your digital boarding pass is ready."
+          : "Updated. Payment status changes only after server verification.",
       );
     },
     onError: (e) => setMessage(e.message),
