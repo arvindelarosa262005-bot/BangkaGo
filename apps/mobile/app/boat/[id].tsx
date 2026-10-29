@@ -13,6 +13,7 @@ import {
 import { backend, supabase, configured } from "../../src/client";
 import { Screen, Button, Field, Badge, State, styles, c } from "../../src/ui";
 import { useSession } from "../../src/session";
+import { GisRouteCard } from "../../src/GisMap";
 import { BoatPhoto } from "../(tabs)/index";
 export default function Details() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -180,6 +181,16 @@ export default function Details() {
                 {s.mode === "seat" ? "per passenger" : "whole boat"}
               </Text>
             </View>
+            <GisRouteCard
+              originName={s.origin}
+              destinationName={s.destination}
+              pickupLabel={s.pickup_label}
+              pickupLat={s.pickup_lat ?? s.origin_lat}
+              pickupLng={s.pickup_lng ?? s.origin_lng}
+              destLat={s.destination_lat}
+              destLng={s.destination_lng}
+              ownerName={s.owner_name}
+            />
             <View style={styles.card}>
               <Text style={styles.h2}>Plan your journey</Text>
               <Field

@@ -14,6 +14,7 @@ import {
   Clock,
 } from "lucide-react-native";
 import { HarborArt } from "../../src/HarborArt";
+import { GisRouteCard, openGisNavigation, resolvePortGis } from "../../src/GisMap";
 import { php, tripDate, durationLabel } from "@bangkago/shared";
 import { backend, supabase, configured } from "../../src/client";
 import { useSession } from "../../src/session";
@@ -73,6 +74,7 @@ export default function Explore() {
   const [search, setSearch] = useState(false);
   const [recent, setRecent] = useState<string[]>([]);
   const [advanced, setAdvanced] = useState(false);
+  const [showMap, setShowMap] = useState(true);
   useEffect(() => {
     AsyncStorage.getItem("recent-boats").then((v) =>
       setRecent(v ? JSON.parse(v) : []),
@@ -203,7 +205,7 @@ export default function Explore() {
               key={port}
               style={[
                 styles.pill,
-                { minHeight: 36, paddingVertical: 6, paddingHorizontal: 11 },
+                { minHeight: 34, paddingVertical: 5, paddingHorizontal: 11 },
                 (origin === port || destination === port) && styles.pillSelected,
               ]}
               onPress={() => {
@@ -219,55 +221,6 @@ export default function Explore() {
           ))}
         </View>
         <View style={styles.row}>
-          <View style={{ flex: 2 }}>
-            <Field
-              label="Trip date (YYYY-MM-DD)"
-              placeholder="Any date"
-              value={date}
-              onChangeText={setDate}
-            />
-          </View>
-          <View style={{ flex: 1 }}>
-            <Field
-              label="Passengers"
-              keyboardType="number-pad"
-              value={count}
-              onChangeText={setCount}
-            />
-          </View>
-        </View>
-        <View style={styles.row}>
-          {[
-            ["", "Any date"],
-            [
-              new Intl.DateTimeFormat("en-CA", {
-                timeZone: "Asia/Manila",
-              }).format(new Date()),
-              "Today",
-            ],
-            [
-              new Intl.DateTimeFormat("en-CA", {
-                timeZone: "Asia/Manila",
-              }).format(new Date(Date.now() + 86400000)),
-              "Tomorrow",
-            ],
-          ].map(([val, label]) => (
-            <Pressable
-              key={label}
-              style={[
-                styles.pill,
-                { minHeight: 36, paddingVertical: 6, paddingHorizontal: 11 },
-                date === val && styles.pillSelected,
-              ]}
-              onPress={() => setDate(val)}
-            >
-              <Text style={{ fontSize: 11, fontWeight: "600", color: c.ocean }}>
-                {label}
-              </Text>
-            </Pressable>
-          ))}
-        </View>
-        <View style={styles.row}>
           {[
             ["all", "Any trip"],
             ["seat", "Per seat"],
@@ -278,38 +231,109 @@ export default function Explore() {
               accessibilityRole="radio"
               accessibilityState={{ checked: mode === value }}
               aria-checked={mode === value}
-              style={[styles.pill, mode === value && styles.pillSelected]}
+              style={[
+                styles.pill,
+                { minHeight: 36, paddingVertical: 6, paddingHorizontal: 12 },
+                mode === value && styles.pillSelected,
+              ]}
               onPress={() => setMode(value)}
             >
               <Text style={styles.link}>{label}</Text>
             </Pressable>
           ))}
         </View>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityState={{ expanded: advanced }}
-          aria-expanded={advanced}
-          onPress={() => setAdvanced(!advanced)}
-          style={{
-            flexDirection: "row",
-            gap: 7,
-            alignItems: "center",
-            minHeight: 44,
-          }}
-        >
-          <SlidersHorizontal size={16} color={c.ocean} />
-          <Text style={styles.link}>
-            {advanced ? "Hide price filter" : "Price filter"}
-          </Text>
-        </Pressable>
+        <View style={styles.between}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityState={{ expanded: advanced }}
+            aria-expanded={advanced}
+            onPress={() => setAdvanced(!advanced)}
+            style={{
+              flexDirection: "row",
+              gap: 7,
+              alignItems: "center",
+              minHeight: 38,
+            }}
+          >
+            <SlidersHorizontal size={15} color={c.ocean} />
+            <Text style={styles.link}>
+              {advanced ? "Hide date & price filters" : "Date, passengers & price"}
+            </Text>
+          </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Toggle GIS port map"
+            onPress={() => setShowMap(!showMap)}
+            style={[
+              styles.pill,
+              { minHeight: 34, paddingVertical: 5, paddingHorizontal: 11 },
+              showMap && styles.pillSelected,
+            ]}
+          >
+            <Text style={{ fontSize: 11, fontWeight: "700", color: c.ocean }}>
+              {showMap ? "Hide GIS Map" : "📍 GIS Port Map"}
+            </Text>
+          </Pressable>
+        </View>
         {advanced && (
-          <Field
-            label="Maximum price per seat / charter (PHP)"
-            keyboardType="decimal-pad"
-            placeholder="Any price"
-            value={maxPrice}
-            onChangeText={setMaxPrice}
-          />
+          <View style={{ gap: 10 }}>
+            <View style={styles.row}>
+              <View style={{ flex: 2 }}>
+                <Field
+                  label="Trip date (YYYY-MM-DD)"
+                  placeholder="Any date"
+                  value={date}
+                  onChangeText={setDate}
+                />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Field
+                  label="Passengers"
+                  keyboardType="number-pad"
+                  value={count}
+                  onChangeText={setCount}
+                />
+              </View>
+            </View>
+            <View style={styles.row}>
+              {[
+                ["", "Any date"],
+                [
+                  new Intl.DateTimeFormat("en-CA", {
+                    timeZone: "Asia/Manila",
+                  }).format(new Date()),
+                  "Today",
+                ],
+                [
+                  new Intl.DateTimeFormat("en-CA", {
+                    timeZone: "Asia/Manila",
+                  }).format(new Date(Date.now() + 86400000)),
+                  "Tomorrow",
+                ],
+              ].map(([val, label]) => (
+                <Pressable
+                  key={label}
+                  style={[
+                    styles.pill,
+                    { minHeight: 34, paddingVertical: 5, paddingHorizontal: 11 },
+                    date === val && styles.pillSelected,
+                  ]}
+                  onPress={() => setDate(val)}
+                >
+                  <Text style={{ fontSize: 11, fontWeight: "600", color: c.ocean }}>
+                    {label}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+            <Field
+              label="Maximum price per seat / charter (PHP)"
+              keyboardType="decimal-pad"
+              placeholder="Any price"
+              value={maxPrice}
+              onChangeText={setMaxPrice}
+            />
+          </View>
         )}
         <Button title="Search boats" onPress={() => setSearch(true)} />
         {Boolean(
@@ -335,6 +359,16 @@ export default function Explore() {
           />
         )}
       </View>
+      {showMap && (
+        <GisRouteCard
+          originName={origin || "Abra de Ilog Port"}
+          destinationName={destination || undefined}
+          onSelectPort={(portName) => {
+            setOrigin(portName);
+            setSearch(true);
+          }}
+        />
+      )}
       {!configured && (
         <View style={styles.card}>
           <Text style={styles.h2}>Getting ready to sail</Text>
@@ -372,58 +406,95 @@ export default function Explore() {
       ) : !boats.length ? (
         <State empty="No eligible schedules found. Try another date or destination." />
       ) : (
-        boats.map((s) => (
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={`View ${s.boat_name}`}
-            key={s.id}
-            style={styles.card}
-            onPress={() => router.push(`/boat/${s.id}`)}
-          >
-            <BoatPhoto path={s.photo_path} />
-            <View style={styles.between}>
-              <Text style={styles.h2}>{s.boat_name}</Text>
-              <View style={styles.row}>
-                <Badge
-                  value={s.mode === "seat" ? "per seat" : "private charter"}
-                />
-                <ShieldCheck color={c.ocean} size={21} />
+        boats.map((s) => {
+          const gis = resolvePortGis(
+            s.origin,
+            s.pickup_lat ?? s.origin_lat,
+            s.pickup_lng ?? s.origin_lng,
+            s.pickup_label,
+          );
+          return (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`View ${s.boat_name}`}
+              key={s.id}
+              style={styles.card}
+              onPress={() => router.push(`/boat/${s.id}`)}
+            >
+              <BoatPhoto path={s.photo_path} />
+              <View style={styles.between}>
+                <Text style={styles.h2}>{s.boat_name}</Text>
+                <View style={styles.row}>
+                  <Badge
+                    value={s.mode === "seat" ? "per seat" : "private charter"}
+                  />
+                  <ShieldCheck color={c.ocean} size={20} />
+                </View>
               </View>
-            </View>
-            <Text style={styles.muted}>
-              {s.owner_name} · Verified operator ·{" "}
-              {s.boat_type.replaceAll("_", " ")}
-            </Text>
-            <View style={styles.row}>
-              <MapPin size={15} color={c.ocean} />
-              <Text style={styles.subtitle}>
-                {s.origin} → {s.destination}
-              </Text>
-            </View>
-            <View style={styles.row}>
-              <Clock size={14} color={c.muted} />
               <Text style={styles.muted}>
-                {tripDate(s.starts_at)}
-                {s.ends_at ? ` · ${durationLabel(s.starts_at, s.ends_at)}` : ""}
+                Operator: {s.owner_name} · {s.boat_type.replaceAll("_", " ")}
               </Text>
-            </View>
-            <View style={styles.between}>
-              <View>
-                <Text style={styles.price}>{php(s.price_minor)}</Text>
-                <Text style={styles.muted}>
-                  {s.mode === "seat" ? "per passenger" : "entire boat"}
+              <View style={styles.row}>
+                <MapPin size={15} color={c.ocean} />
+                <Text style={styles.subtitle}>
+                  {s.origin} → {s.destination}
                 </Text>
+              </View>
+              <View
+                style={{
+                  backgroundColor: "#F5F9FF",
+                  borderRadius: 10,
+                  paddingHorizontal: 10,
+                  paddingVertical: 7,
+                  borderWidth: 1,
+                  borderColor: "#DCE9FA",
+                  flexDirection: "row",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: 8,
+                }}
+              >
+                <Text style={{ fontSize: 11.5, color: c.navy, flex: 1 }}>
+                  📍 Pickup: {gis.landmark}
+                </Text>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={`Open GPS map for ${s.boat_name}`}
+                  onPress={(e) => {
+                    e.stopPropagation();
+                    openGisNavigation(gis.lat, gis.lng, gis.landmark);
+                  }}
+                >
+                  <Text style={{ fontSize: 11, fontWeight: "700", color: c.ocean }}>
+                    GPS Map →
+                  </Text>
+                </Pressable>
               </View>
               <View style={styles.row}>
-                <Users color={c.muted} size={16} />
+                <Clock size={14} color={c.muted} />
                 <Text style={styles.muted}>
-                  {s.remaining} of {s.capacity} available
+                  {tripDate(s.starts_at)}
+                  {s.ends_at ? ` · ${durationLabel(s.starts_at, s.ends_at)}` : ""}
                 </Text>
               </View>
-            </View>
-            <Text style={styles.link}>View details →</Text>
-          </Pressable>
-        ))
+              <View style={styles.between}>
+                <View>
+                  <Text style={styles.price}>{php(s.price_minor)}</Text>
+                  <Text style={styles.muted}>
+                    {s.mode === "seat" ? "per passenger" : "entire boat"}
+                  </Text>
+                </View>
+                <View style={styles.row}>
+                  <Users color={c.muted} size={16} />
+                  <Text style={styles.muted}>
+                    {s.remaining} of {s.capacity} available
+                  </Text>
+                </View>
+              </View>
+              <Text style={styles.link}>View trip & book →</Text>
+            </Pressable>
+          );
+        })
       )}
       {!!recent.length && (
         <>

@@ -562,7 +562,36 @@ insert into public.app_settings(key,value) values
  ('cancellation_policy','"Full refund before departure; contact support for weather and safety cancellations."')
 on conflict(key) do nothing;
 
--- 6. DIRECT PAYMENT, ADMIN RECONCILIATION, REFUND & LIVE FLEET SEED
+-- 6. DIRECT PAYMENT, ADMIN RECONCILIATION, REFUND & GIS PICKUP REMINDERS
+-- Remove any previously seeded demo boats/schedules so only 100% real boat owners and rentals exist
+delete from public.bookings where boat_id in ('20000000-0000-4000-8000-000000000001','20000000-0000-4000-8000-000000000002','20000000-0000-4000-8000-000000000003');
+delete from public.boat_schedules where id in ('30000000-0000-4000-8000-000000000001','30000000-0000-4000-8000-000000000002','30000000-0000-4000-8000-000000000003','30000000-0000-4000-8000-000000000004','30000000-0000-4000-8000-000000000005','30000000-0000-4000-8000-000000000006');
+delete from public.boat_documents where boat_id in ('20000000-0000-4000-8000-000000000001','20000000-0000-4000-8000-000000000002','20000000-0000-4000-8000-000000000003');
+delete from public.boats where id in ('20000000-0000-4000-8000-000000000001','20000000-0000-4000-8000-000000000002','20000000-0000-4000-8000-000000000003');
+
+-- GIS Location & Pickup Reminder columns
+alter table public.locations add column if not exists latitude double precision;
+alter table public.locations add column if not exists longitude double precision;
+alter table public.locations add column if not exists landmark text not null default '';
+
+update public.locations set latitude=13.4628, longitude=120.7514, landmark='Pier 1–2 Passenger Boarding Ramp, Brgy. Matabang' where name='Abra de Ilog Port';
+update public.locations set latitude=13.4712, longitude=120.7358, landmark='Wawa Coastal Landing & Boat Mooring Zone' where name='Wawa';
+update public.locations set latitude=13.2185, longitude=120.5936, landmark='Mamburao Municipal Port & Coastal Terminal' where name='Mamburao';
+
+alter table public.boats add column if not exists pickup_label text not null default '';
+alter table public.boats add column if not exists pickup_lat double precision;
+alter table public.boats add column if not exists pickup_lng double precision;
+
+alter table public.boat_schedules add column if not exists pickup_label text not null default '';
+alter table public.boat_schedules add column if not exists pickup_lat double precision;
+alter table public.boat_schedules add column if not exists pickup_lng double precision;
+
+alter table public.bookings add column if not exists pickup_label text not null default '';
+alter table public.bookings add column if not exists pickup_lat double precision;
+alter table public.bookings add column if not exists pickup_lng double precision;
+alter table public.bookings add column if not exists pickup_reminder text not null default '';
+alter table public.bookings add column if not exists reminder_sent_at timestamptz;
+
 create or replace function private.owns_boat(p_id uuid) returns boolean language sql stable security definer set search_path='' as $$
  select exists(select 1 from public.boats b join public.profiles p on p.id=b.owner_id where b.id=p_id and (p.id=auth.uid() or private.is_admin()) and p.account_status='active')
 $$;
@@ -574,9 +603,63 @@ create or replace function private.save_boat(p_data jsonb,p_id uuid default null
  if not exists(select 1 from public.boat_owners o join public.profiles p on p.id=o.id where o.id=auth.uid() and p.account_status='active' and o.verification_status<>'suspended') then raise exception 'Active owner account required';end if;
  if p_id is not null and not private.owns_boat(p_id) then raise exception 'Not your boat';end if;
  if p_id is not null and exists(select 1 from public.boat_schedules where boat_id=p_id and ends_at>now() and status<>'cancelled') then raise exception 'Close future schedules before changing registration details';end if;
- insert into public.boats(id,owner_id,name,description,boat_type,capacity,home_location_id,charter_price_minor,seat_price_minor)
- values(coalesce(p_id,gen_random_uuid()),auth.uid(),p_data->>'name',p_data->>'description',p_data->>'boat_type',(p_data->>'capacity')::int,(p_data->>'home_location_id')::uuid,(p_data->>'charter_price_minor')::bigint,(p_data->>'seat_price_minor')::bigint)
- on conflict(id) do update set name=excluded.name,description=excluded.description,boat_type=excluded.boat_type,capacity=excluded.capacity,home_location_id=excluded.home_location_id,charter_price_minor=excluded.charter_price_minor,seat_price_minor=excluded.seat_price_minor,verification_status='draft',active=false,updated_at=now() returning id into v_id;return v_id;end$$;
+ insert into public.boats(id,owner_id,name,description,boat_type,capacity,home_location_id,charter_price_minor,seat_price_minor,pickup_label,pickup_lat,pickup_lng)
+ values(
+  coalesce(p_id,gen_random_uuid()),
+  auth.uid(),
+  p_data->>'name',
+  coalesce(p_data->>'description',''),
+  p_data->>'boat_type',
+  (p_data->>'capacity')::int,
+  (p_data->>'home_location_id')::uuid,
+  (p_data->>'charter_price_minor')::bigint,
+  (p_data->>'seat_price_minor')::bigint,
+  coalesce(p_data->>'pickup_label',''),
+  nullif(p_data->>'pickup_lat','')::double precision,
+  nullif(p_data->>'pickup_lng','')::double precision
+ )
+ on conflict(id) do update set
+  name=excluded.name,
+  description=excluded.description,
+  boat_type=excluded.boat_type,
+  capacity=excluded.capacity,
+  home_location_id=excluded.home_location_id,
+  charter_price_minor=excluded.charter_price_minor,
+  seat_price_minor=excluded.seat_price_minor,
+  pickup_label=excluded.pickup_label,
+  pickup_lat=excluded.pickup_lat,
+  pickup_lng=excluded.pickup_lng,
+  verification_status='draft',
+  active=false,
+  updated_at=now()
+ returning id into v_id;
+ return v_id;
+end$$;
+
+create or replace function private.save_schedule(p_data jsonb) returns uuid language plpgsql security definer set search_path='' as $$declare b public.boats;s public.boat_schedules;v_id uuid;begin
+ select * into b from public.boats where id=(p_data->>'boat_id')::uuid for update;
+ if not private.owns_boat(b.id) or not private.visible_boat(b.id) then raise exception 'Approved active boat required';end if;
+ s.starts_at:=(p_data->>'starts_at')::timestamptz;s.ends_at:=(p_data->>'ends_at')::timestamptz;s.mode:=p_data->>'mode';s.capacity:=(p_data->>'capacity')::int;
+ if s.starts_at<=now() or s.ends_at<=s.starts_at or s.capacity>b.capacity then raise exception 'Invalid schedule or capacity';end if;
+ if not exists(select 1 from public.routes where id=(p_data->>'route_id')::uuid and active) then raise exception 'Active route required';end if;
+ if (s.mode='seat' and b.seat_price_minor<=0) or (s.mode='charter' and b.charter_price_minor<=0) then raise exception 'Booking mode not enabled on boat';end if;
+ if exists(select 1 from public.boat_schedules x where x.boat_id=b.id and x.status<>'cancelled' and tstzrange(x.starts_at,x.ends_at,'[)') && tstzrange(s.starts_at,s.ends_at,'[)')) then raise exception 'Schedule overlaps an existing trip';end if;
+ insert into public.boat_schedules(boat_id,route_id,starts_at,ends_at,mode,capacity,price_minor,pickup_label,pickup_lat,pickup_lng)
+ values(
+  b.id,
+  (p_data->>'route_id')::uuid,
+  s.starts_at,
+  s.ends_at,
+  s.mode,
+  s.capacity,
+  (p_data->>'price_minor')::bigint,
+  coalesce(nullif(trim(p_data->>'pickup_label'),''), b.pickup_label, ''),
+  coalesce(nullif(p_data->>'pickup_lat','')::double precision, b.pickup_lat),
+  coalesce(nullif(p_data->>'pickup_lng','')::double precision, b.pickup_lng)
+ )
+ returning id into v_id;
+ return v_id;
+end$$;
 
 create or replace function private.review_boat(p_id uuid,p_status text,p_reason text) returns void language plpgsql security definer set search_path='' as $$declare b public.boats;begin
  if not private.is_admin() then raise exception 'Administrator required';end if;
@@ -594,7 +677,7 @@ create or replace function private.review_boat(p_id uuid,p_status text,p_reason 
  insert into public.admin_audit_logs(actor_id,action,target_id,reason,summary) values(auth.uid(),'boat.'||p_status,p_id,p_reason,jsonb_build_object('before',b.verification_status));
  insert into public.notifications(user_id,title,body) values(b.owner_id,'Boat registration: '||p_status,p_reason);end$$;
 
-create or replace function private.reserve_booking(p_schedule uuid,p_count int,p_key uuid,p_instructions text default '') returns public.bookings language plpgsql security definer set search_path='' as $$declare s public.boat_schedules;b public.boats;r public.commission_rules;v public.bookings;v_used int;v_base bigint;v_comm bigint;begin
+create or replace function private.reserve_booking(p_schedule uuid,p_count int,p_key uuid,p_instructions text default '') returns public.bookings language plpgsql security definer set search_path='' as $$declare s public.boat_schedules;b public.boats;r public.commission_rules;v public.bookings;v_used int;v_base bigint;v_comm bigint;v_loc public.locations;begin
  if not private.is_active() then raise exception 'Active signed-in account required';end if;
  perform pg_advisory_xact_lock(hashtextextended(auth.uid()::text||p_key::text,0));
  select * into v from public.bookings where passenger_id=auth.uid() and idempotency_key=p_key;
@@ -607,9 +690,29 @@ create or replace function private.reserve_booking(p_schedule uuid,p_count int,p
  select coalesce(sum(case when mode='charter' then s.capacity else passenger_count end),0) into v_used from public.bookings where schedule_id=s.id and (status in ('confirmed','completed') or (status in ('pending_owner_confirmation','awaiting_payment') and reservation_expires_at>now()));
  if (s.mode='charter' and v_used>0) or (s.mode='seat' and v_used+p_count>s.capacity) then raise exception 'Insufficient available capacity';end if;
  select * into r from public.commission_rules where effective_at<=now() order by effective_at desc limit 1;if not found then raise exception 'Commission configuration required';end if;
+ select l.* into v_loc from public.routes rt join public.locations l on l.id=rt.origin_id where rt.id=s.route_id;
  v_base:=s.price_minor*case when s.mode='seat' then p_count else 1 end;v_comm:=round(v_base::numeric*r.rate_bps/10000)::bigint;
- insert into public.bookings(passenger_id,boat_id,schedule_id,mode,passenger_count,base_minor,service_fee_minor,total_minor,commission_rule_id,rate_bps,commission_minor,operator_minor,reservation_expires_at,idempotency_key,instructions)
- values(auth.uid(),b.id,s.id,s.mode,p_count,v_base,r.service_fee_minor,v_base+r.service_fee_minor,r.id,r.rate_bps,v_comm,v_base-v_comm,least(now()+interval '30 minutes',s.starts_at),p_key,p_instructions) returning * into v;
+ insert into public.bookings(passenger_id,boat_id,schedule_id,mode,passenger_count,base_minor,service_fee_minor,total_minor,commission_rule_id,rate_bps,commission_minor,operator_minor,reservation_expires_at,idempotency_key,instructions,pickup_label,pickup_lat,pickup_lng)
+ values(
+  auth.uid(),
+  b.id,
+  s.id,
+  s.mode,
+  p_count,
+  v_base,
+  r.service_fee_minor,
+  v_base+r.service_fee_minor,
+  r.id,
+  r.rate_bps,
+  v_comm,
+  v_base-v_comm,
+  least(now()+interval '30 minutes',s.starts_at),
+  p_key,
+  p_instructions,
+  coalesce(nullif(s.pickup_label,''), nullif(b.pickup_label,''), v_loc.landmark, v_loc.name),
+  coalesce(s.pickup_lat, b.pickup_lat, v_loc.latitude),
+  coalesce(s.pickup_lng, b.pickup_lng, v_loc.longitude)
+ ) returning * into v;
  insert into public.notifications(user_id,title,body) values(b.owner_id,'New booking request',v.reference||' is awaiting your decision.');return v;end$$;
 
 create or replace function private.booking_action(p_id uuid,p_action text,p_reason text default '') returns void language plpgsql security definer set search_path='' as $$declare b public.bookings;s public.boat_schedules;v_owner boolean;begin
@@ -637,6 +740,99 @@ create or replace function private.booking_action(p_id uuid,p_action text,p_reas
  else raise exception 'Unsupported action';end if;
  insert into public.notifications(user_id,title,body) values(b.passenger_id,'Booking updated',b.reference||': '||p_action);
  if private.is_admin() then insert into public.admin_audit_logs(actor_id,action,target_id,reason) values(auth.uid(),'booking.'||p_action,b.id,p_reason);end if;end$$;
+
+create or replace function private.send_pickup_reminder(p_booking uuid,p_pickup_label text,p_lat double precision,p_lng double precision,p_reminder text) returns void language plpgsql security definer set search_path='' as $$
+declare
+ b public.bookings;
+ v_boat public.boats;
+begin
+ select * into b from public.bookings where id=p_booking for update;
+ if not found then raise exception 'Booking not found';end if;
+ select * into v_boat from public.boats where id=b.boat_id;
+ if not private.owns_boat(b.boat_id) and not private.is_admin() then
+  raise exception 'Boat operator access required';
+ end if;
+ if length(trim(coalesce(p_pickup_label,'')))<3 or length(trim(coalesce(p_reminder,'')))<3 then
+  raise exception 'Enter a pickup point landmark and reminder message';
+ end if;
+ update public.bookings
+ set
+  pickup_label=left(trim(p_pickup_label),200),
+  pickup_lat=coalesce(p_lat, pickup_lat),
+  pickup_lng=coalesce(p_lng, pickup_lng),
+  pickup_reminder=left(trim(p_reminder),500),
+  reminder_sent_at=now(),
+  updated_at=now()
+ where id=p_booking;
+ insert into public.notifications(user_id,title,body)
+ values(
+  b.passenger_id,
+  'Pickup reminder · '||b.reference||' ('||v_boat.name||')',
+  'Meet at '||left(trim(p_pickup_label),120)||' — '||left(trim(p_reminder),300)
+ );
+end$$;
+create or replace function public.send_pickup_reminder(p_booking uuid,p_pickup_label text,p_lat double precision,p_lng double precision,p_reminder text) returns void language sql security invoker set search_path='' as $$select private.send_pickup_reminder(p_booking,p_pickup_label,p_lat,p_lng,p_reminder)$$;
+
+drop function if exists public.available_schedules();
+create function public.available_schedules() returns table(
+ id uuid,
+ boat_id uuid,
+ boat_name text,
+ boat_type text,
+ description text,
+ capacity int,
+ mode text,
+ price_minor bigint,
+ starts_at timestamptz,
+ ends_at timestamptz,
+ origin text,
+ destination text,
+ remaining int,
+ photo_path text,
+ owner_name text,
+ cancellation_policy text,
+ next_change_at timestamptz,
+ pickup_label text,
+ pickup_lat double precision,
+ pickup_lng double precision,
+ origin_lat double precision,
+ origin_lng double precision,
+ destination_lat double precision,
+ destination_lng double precision
+) language sql stable security definer set search_path='' as $$
+ select
+  s.id,
+  b.id,
+  b.name,
+  b.boat_type,
+  b.description,
+  s.capacity,
+  s.mode,
+  s.price_minor,
+  s.starts_at,
+  s.ends_at,
+  o.name,
+  d.name,
+  greatest(0,s.capacity-coalesce((select sum(case when x.mode='charter' then s.capacity else x.passenger_count end)::int from public.bookings x where x.schedule_id=s.id and (x.status in ('confirmed','completed') or (x.status in ('pending_owner_confirmation','awaiting_payment') and x.reservation_expires_at>now()))),0)),
+  (select i.storage_path from public.boat_images i where i.boat_id=b.id order by i.created_at limit 1),
+  p.display_name,
+  b.cancellation_policy,
+  least(s.starts_at,(select min(x.reservation_expires_at) from public.bookings x where x.schedule_id=s.id and x.status in ('pending_owner_confirmation','awaiting_payment') and x.reservation_expires_at>now()),(select min(c.effective_at) from public.commission_rules c where c.effective_at>now())),
+  coalesce(nullif(s.pickup_label,''), nullif(b.pickup_label,''), o.landmark, o.name),
+  coalesce(s.pickup_lat, b.pickup_lat, o.latitude),
+  coalesce(s.pickup_lng, b.pickup_lng, o.longitude),
+  o.latitude,
+  o.longitude,
+  d.latitude,
+  d.longitude
+ from public.boat_schedules s
+ join public.boats b on b.id=s.boat_id
+ join public.profiles p on p.id=b.owner_id
+ join public.routes r on r.id=s.route_id
+ join public.locations o on o.id=r.origin_id
+ join public.locations d on d.id=r.destination_id
+ where private.visible_boat(b.id) and s.status='open' and s.starts_at>now() and r.active and o.active and d.active
+$$;
 
 create or replace function private.complete_direct_payment(p_booking uuid) returns text language plpgsql security definer set search_path='' as $$
 declare
@@ -697,51 +893,16 @@ begin
 end$$;
 create or replace function public.admin_process_refund(p_refund uuid,p_reason text) returns text language sql security invoker set search_path='' as $$select private.admin_process_refund(p_refund,p_reason)$$;
 
-grant execute on function private.complete_direct_payment(uuid),public.complete_direct_payment(uuid),private.admin_reconcile_payment(uuid),public.admin_reconcile_payment(uuid),private.admin_process_refund(uuid,text),public.admin_process_refund(uuid,text) to authenticated;
-
--- Seed initial verified fleet & open schedules assigned to the first profile in the project
-do $$
-declare
- v_owner uuid;
- v_r1 uuid;
- v_r2 uuid;
- v_r3 uuid;
- v_r4 uuid;
- v_b1 uuid := '20000000-0000-4000-8000-000000000001';
- v_b2 uuid := '20000000-0000-4000-8000-000000000002';
- v_b3 uuid := '20000000-0000-4000-8000-000000000003';
-begin
- select id into v_owner from public.profiles order by created_at asc limit 1;
- if v_owner is not null then
-  insert into public.boat_owners(id,verification_status) values(v_owner,'approved') on conflict(id) do update set verification_status='approved';
-  insert into public.boats(id,owner_id,name,description,boat_type,capacity,home_location_id,charter_price_minor,seat_price_minor,verification_status,active)
-  values
-   (v_b1,v_owner,'MV Mindoro Express','Twin-outrigger passenger bangka with shaded cabin, life vests for all ages, and GPS coastal radio.','passenger_boat',40,'10000000-0000-4000-8000-000000000001',1200000,35000,'approved',true),
-   (v_b2,v_owner,'Bangka Kalayaan','Traditional motorized bangka ideal for island hopping, reef tours, and Wawa-Mamburao coastal crossings.','motorized_bangka',18,'10000000-0000-4000-8000-000000000002',550000,25000,'approved',true),
-   (v_b3,v_owner,'Isla Verde Speedboat','Fast fiberglass hull charter for direct transfers and private family or group excursions.','speedboat',10,'10000000-0000-4000-8000-000000000001',850000,60000,'approved',true)
-  on conflict(id) do update set active=true,verification_status='approved';
-
-  insert into public.boat_documents(boat_id,requirement_id,storage_path,expires_on)
-  select b.id,r.id,v_owner::text||'/'||b.id::text||'-'||r.id::text||'.pdf',((now() at time zone 'Asia/Manila')::date + 365)
-  from public.boats b cross join public.document_requirements r
-  where b.id in (v_b1,v_b2,v_b3)
-  on conflict(storage_path) do nothing;
-
-  select id into v_r1 from public.routes where origin_id='10000000-0000-4000-8000-000000000001' and destination_id='10000000-0000-4000-8000-000000000002' limit 1;
-  select id into v_r2 from public.routes where origin_id='10000000-0000-4000-8000-000000000001' and destination_id='10000000-0000-4000-8000-000000000003' limit 1;
-  select id into v_r3 from public.routes where origin_id='10000000-0000-4000-8000-000000000002' and destination_id='10000000-0000-4000-8000-000000000003' limit 1;
-  select id into v_r4 from public.routes where origin_id='10000000-0000-4000-8000-000000000003' and destination_id='10000000-0000-4000-8000-000000000001' limit 1;
-
-  insert into public.boat_schedules(id,boat_id,route_id,mode,starts_at,ends_at,capacity,price_minor,status)
-  values
-   ('30000000-0000-4000-8000-000000000001',v_b1,v_r1,'seat',now()+interval '6 hours',now()+interval '7 hours 15 minutes',40,35000,'open'),
-   ('30000000-0000-4000-8000-000000000002',v_b1,v_r2,'seat',now()+interval '24 hours',now()+interval '26 hours',40,45000,'open'),
-   ('30000000-0000-4000-8000-000000000003',v_b2,v_r3,'seat',now()+interval '12 hours',now()+interval '13 hours 30 minutes',18,25000,'open'),
-   ('30000000-0000-4000-8000-000000000004',v_b2,v_r1,'charter',now()+interval '36 hours',now()+interval '39 hours',18,550000,'open'),
-   ('30000000-0000-4000-8000-000000000005',v_b3,v_r2,'charter',now()+interval '18 hours',now()+interval '19 hours 15 minutes',10,850000,'open'),
-   ('30000000-0000-4000-8000-000000000006',v_b3,v_r4,'seat',now()+interval '48 hours',now()+interval '49 hours 15 minutes',10,60000,'open')
-  on conflict(id) do update set starts_at=excluded.starts_at,ends_at=excluded.ends_at,status='open';
- end if;
-end$$;
+grant execute on function
+ private.complete_direct_payment(uuid),
+ public.complete_direct_payment(uuid),
+ private.admin_reconcile_payment(uuid),
+ public.admin_reconcile_payment(uuid),
+ private.admin_process_refund(uuid,text),
+ public.admin_process_refund(uuid,text),
+ private.send_pickup_reminder(uuid,text,double precision,double precision,text),
+ public.send_pickup_reminder(uuid,text,double precision,double precision,text)
+to authenticated;
+grant execute on function public.available_schedules() to anon,authenticated;
 
 notify pgrst,'reload schema';

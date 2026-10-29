@@ -6,6 +6,7 @@ import { useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
 import { php, tripDate, durationLabel, bookingViewStatus } from "@bangkago/shared";
 import { backend, supabase } from "../../src/client";
 import { useSession } from "../../src/session";
+import { GisRouteCard } from "../../src/GisMap";
 import { Screen, Button, Field, Badge, State, styles, c } from "../../src/ui";
 const journeySteps = [
   ["pending_owner_confirmation", "Requested"],
@@ -15,7 +16,8 @@ const journeySteps = [
 ] as const;
 export default function Bookings() {
   const { session, loading, error } = useSession();
-  const [reason, setReason] = useState("");
+  const [reason, setReason] = useState("Change of travel plans");
+  const [cancellingId, setCancellingId] = useState<string | null>(null);
   const [message, setMessage] = useState("");
   const [filter, setFilter] = useState("all");
   const qc = useQueryClient();
@@ -242,6 +244,21 @@ export default function Bookings() {
                   Reservation ends: {tripDate(b.reservation_expires_at)}
                 </Text>
               )}
+              <GisRouteCard
+                compact={
+                  !["pending_owner_confirmation", "awaiting_payment", "confirmed"].includes(
+                    st,
+                  )
+                }
+                originName={b.pickup_label || "Abra de Ilog Port"}
+                pickupLabel={b.pickup_label}
+                pickupLat={b.pickup_lat}
+                pickupLng={b.pickup_lng}
+                reminderNote={b.pickup_reminder}
+                reminderSentAt={
+                  b.reminder_sent_at ? tripDate(b.reminder_sent_at) : undefined
+                }
+              />
               {st === "awaiting_payment" && (
                 <Button
                   title="Pay with GCash"
@@ -262,12 +279,34 @@ export default function Bookings() {
                 "awaiting_payment",
                 "confirmed",
               ].includes(st) && (
-                <Button
-                  secondary
-                  title="Cancel booking"
-                  busy={action.isPending}
-                  onPress={() => action.mutate({ b, operation: "cancel" })}
-                />
+                <>
+                  {cancellingId === b.id ? (
+                    <View style={{ gap: 8 }}>
+                      <Field
+                        label="Reason for cancellation"
+                        value={reason}
+                        onChangeText={setReason}
+                        placeholder="At least 5 characters"
+                      />
+                      <Button
+                        secondary
+                        title="Confirm cancellation"
+                        busy={action.isPending}
+                        onPress={() => {
+                          action.mutate({ b, operation: "cancel" });
+                          setCancellingId(null);
+                        }}
+                      />
+                    </View>
+                  ) : (
+                    <Button
+                      secondary
+                      title="Cancel booking"
+                      busy={action.isPending}
+                      onPress={() => setCancellingId(b.id)}
+                    />
+                  )}
+                </>
               )}
               <BoardingPass booking={b} status={st} />
               {st === "completed" && (
@@ -277,13 +316,6 @@ export default function Bookings() {
           );
         })
       )}
-      <Field
-        label="Reason for cancellation / support notes"
-        value={reason}
-        onChangeText={setReason}
-        multiline
-        placeholder="At least five characters for a cancellation"
-      />
       {!!message && (
         <Text style={styles.subtitle} accessibilityLiveRegion="polite">
           {message}

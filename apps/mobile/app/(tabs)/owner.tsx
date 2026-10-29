@@ -17,11 +17,19 @@ import {
 import { backend, supabase } from "../../src/client";
 import { useSession } from "../../src/session";
 import { Screen, Button, Field, Badge, State, styles, c } from "../../src/ui";
+import {
+  GisRouteCard,
+  KNOWN_PORTS,
+  openGisNavigation,
+  resolvePortGis,
+} from "../../src/GisMap";
+
 export default function Owner() {
   const { session, profile, loading, error } = useSession();
   const [tab, setTab] = useState("boats");
   const [reqSearch, setReqSearch] = useState("");
   const [reqFilter, setReqFilter] = useState("all");
+  const [showFinanceSummary, setShowFinanceSummary] = useState(false);
   const [message, setMessage] = useState("");
   const qc = useQueryClient();
   const data = useQuery({
@@ -118,7 +126,7 @@ export default function Owner() {
             <Text style={styles.muted}>
               Signed in as {profile?.display_name ?? session.user.email}. Enable
               your boat operator workspace to register vessels, upload permits,
-              and manage passenger bookings.
+              set GIS boarding points, and manage passenger bookings.
             </Text>
             <Button
               title="Become a boat operator"
@@ -143,7 +151,7 @@ export default function Owner() {
     <Screen>
       <Text style={styles.title}>Welcome, captain.</Text>
       <Text style={styles.subtitle}>
-        Your boats, bookings, and next journeys.
+        Your registered boats, GIS boarding points, and passenger manifest.
       </Text>
       {data.isPending ? (
         <State loading />
@@ -201,18 +209,18 @@ export default function Owner() {
                     style={{
                       flex: 1,
                       minWidth: 135,
-                      backgroundColor: "#F7FAFF",
+                      backgroundColor: "#F8FAFC",
                       borderColor: c.border,
                       borderWidth: 1,
-                      borderRadius: 14,
-                      padding: 13,
-                      gap: 4,
+                      borderRadius: 12,
+                      padding: 12,
+                      gap: 3,
                     }}
                   >
                     <Text style={styles.muted}>{label}</Text>
                     <Text
                       style={{
-                        fontSize: 18,
+                        fontSize: 17,
                         fontWeight: "800",
                         color: c.navy,
                       }}
@@ -222,57 +230,68 @@ export default function Owner() {
                   </View>
                 ))}
               </View>
-              <View style={styles.hr} />
-              <View style={styles.between}>
-                <Text style={styles.muted}>Estimated gross requests</Text>
-                <Text style={styles.subtitle}>
-                  {php(sum(d.bookings, "base_minor"))}
+              <Pressable
+                onPress={() => setShowFinanceSummary((v) => !v)}
+                style={{ paddingVertical: 4 }}
+              >
+                <Text style={styles.link}>
+                  {showFinanceSummary
+                    ? "Hide ledger breakdown ▲"
+                    : "Show ledger & commission breakdown ▼"}
                 </Text>
-              </View>
-              <View style={styles.between}>
-                <Text style={styles.muted}>
-                  Verified fare commission deductions
-                </Text>
-                <Text style={styles.subtitle}>
-                  {php(
-                    sum(
-                      d.fees.filter(
-                        (f) => f.reconciliation_status !== "reversed",
-                      ),
-                      "commission_minor",
-                    ),
-                  )}
-                </Text>
-              </View>
-              <View style={styles.between}>
-                <Text style={styles.muted}>
-                  Verified operator payable (pre-fee)
-                </Text>
-                <Text style={styles.subtitle}>
-                  {php(
-                    sum(
-                      d.fees.filter(
-                        (f) => f.reconciliation_status !== "reversed",
-                      ),
-                      "operator_minor",
-                    ),
-                  )}
-                </Text>
-              </View>
-              <View style={styles.between}>
-                <Text style={styles.muted}>Refunds confirmed</Text>
-                <Text style={styles.subtitle}>
-                  {php(
-                    sum(
-                      d.refunds.filter((r) => r.status === "confirmed"),
-                      "amount_minor",
-                    ),
-                  )}
-                </Text>
-              </View>
-              <Text style={styles.muted}>
-                Processing fees remain subject to provider reconciliation.
-              </Text>
+              </Pressable>
+              {showFinanceSummary && (
+                <>
+                  <View style={styles.hr} />
+                  <View style={styles.between}>
+                    <Text style={styles.muted}>Estimated gross requests</Text>
+                    <Text style={styles.subtitle}>
+                      {php(sum(d.bookings, "base_minor"))}
+                    </Text>
+                  </View>
+                  <View style={styles.between}>
+                    <Text style={styles.muted}>
+                      Verified fare commission deductions
+                    </Text>
+                    <Text style={styles.subtitle}>
+                      {php(
+                        sum(
+                          d.fees.filter(
+                            (f) => f.reconciliation_status !== "reversed",
+                          ),
+                          "commission_minor",
+                        ),
+                      )}
+                    </Text>
+                  </View>
+                  <View style={styles.between}>
+                    <Text style={styles.muted}>
+                      Verified operator payable (pre-fee)
+                    </Text>
+                    <Text style={styles.subtitle}>
+                      {php(
+                        sum(
+                          d.fees.filter(
+                            (f) => f.reconciliation_status !== "reversed",
+                          ),
+                          "operator_minor",
+                        ),
+                      )}
+                    </Text>
+                  </View>
+                  <View style={styles.between}>
+                    <Text style={styles.muted}>Refunds confirmed</Text>
+                    <Text style={styles.subtitle}>
+                      {php(
+                        sum(
+                          d.refunds.filter((r) => r.status === "confirmed"),
+                          "amount_minor",
+                        ),
+                      )}
+                    </Text>
+                  </View>
+                </>
+              )}
             </View>
             <View style={styles.row}>
               {["boats", "requests", "schedules", "earnings"].map((t) => (
@@ -281,7 +300,13 @@ export default function Owner() {
                   style={[styles.pill, tab === t && styles.pillSelected]}
                   onPress={() => setTab(t)}
                 >
-                  <Text style={styles.link}>
+                  <Text
+                    style={{
+                      fontSize: 13,
+                      fontWeight: "700",
+                      color: tab === t ? c.ocean : c.navy,
+                    }}
+                  >
                     {t.charAt(0).toUpperCase() + t.slice(1)}
                   </Text>
                 </Pressable>
@@ -290,62 +315,130 @@ export default function Owner() {
             {tab === "boats" ? (
               <>
                 <BoatForm locations={d.locations} notify={setMessage} />
-                {d.boats.map((b) => (
-                  <View key={b.id} style={styles.card}>
-                    <View style={styles.between}>
-                      <Text style={styles.h2}>{b.name}</Text>
-                      <Badge value={b.verification_status} />
-                    </View>
-                    <Text style={styles.muted}>
-                      {b.capacity} passengers ·{" "}
-                      {b.active ? "Operating" : "Inactive"}
-                    </Text>
-                    <Text style={styles.muted}>
-                      Charter {php(b.charter_price_minor)} · seat{" "}
-                      {php(b.seat_price_minor)}
-                    </Text>
-                    {["draft", "needs_correction", "rejected"].includes(
-                      b.verification_status,
-                    ) && (
-                      <>
-                        <AttachmentForm
-                          boat={b}
-                          requirements={d.requirements}
-                          notify={setMessage}
-                        />
+                {d.boats.map((b) => {
+                  const homeLoc = d.locations.find(
+                    (l: any) => l.id === b.home_location_id,
+                  );
+                  const portGis = resolvePortGis(
+                    homeLoc?.name,
+                    b.pickup_lat ?? homeLoc?.latitude,
+                    b.pickup_lng ?? homeLoc?.longitude,
+                    b.pickup_label || homeLoc?.landmark,
+                  );
+                  return (
+                    <View key={b.id} style={styles.card}>
+                      <View style={styles.between}>
+                        <Text style={styles.h2}>{b.name}</Text>
+                        <Badge value={b.verification_status} />
+                      </View>
+                      <Text style={styles.muted}>
+                        {b.capacity} passengers ·{" "}
+                        {b.active ? "Operating" : "Inactive"}
+                      </Text>
+                      <Text style={styles.muted}>
+                        Charter {php(b.charter_price_minor)} · seat{" "}
+                        {php(b.seat_price_minor)}
+                      </Text>
+                      <View
+                        style={{
+                          backgroundColor: "#F0FDF4",
+                          borderRadius: 10,
+                          paddingHorizontal: 11,
+                          paddingVertical: 8,
+                          borderWidth: 1,
+                          borderColor: "#BBF7D0",
+                          flexDirection: "row",
+                          justifyContent: "space-between",
+                          alignItems: "center",
+                          gap: 8,
+                        }}
+                      >
+                        <View style={{ flex: 1 }}>
+                          <Text
+                            style={{
+                              fontSize: 12,
+                              fontWeight: "700",
+                              color: "#14532D",
+                            }}
+                          >
+                            📍 Default GIS Boarding Point: {portGis.landmark}
+                          </Text>
+                          <Text style={{ fontSize: 11, color: "#166534" }}>
+                            GPS {portGis.lat.toFixed(4)}°N,{" "}
+                            {portGis.lng.toFixed(4)}°E
+                          </Text>
+                        </View>
+                        <Pressable
+                          onPress={() =>
+                            openGisNavigation(
+                              portGis.lat,
+                              portGis.lng,
+                              portGis.landmark,
+                            )
+                          }
+                          style={{
+                            backgroundColor: "#FFFFFF",
+                            paddingHorizontal: 9,
+                            paddingVertical: 5,
+                            borderRadius: 8,
+                            borderWidth: 1,
+                            borderColor: "#86EFAC",
+                          }}
+                        >
+                          <Text
+                            style={{
+                              fontSize: 11,
+                              fontWeight: "800",
+                              color: c.success,
+                            }}
+                          >
+                            Map →
+                          </Text>
+                        </Pressable>
+                      </View>
+                      {["draft", "needs_correction", "rejected"].includes(
+                        b.verification_status,
+                      ) && (
+                        <>
+                          <AttachmentForm
+                            boat={b}
+                            requirements={d.requirements}
+                            notify={setMessage}
+                          />
+                          <Button
+                            title="Submit for review"
+                            busy={mutation.isPending}
+                            onPress={() =>
+                              mutation.mutate({ action: "submit", id: b.id })
+                            }
+                          />
+                          <BoatForm
+                            locations={d.locations}
+                            notify={setMessage}
+                            existing={b}
+                          />
+                        </>
+                      )}
+                      {b.verification_status === "approved" && (
                         <Button
-                          title="Submit for review"
+                          secondary
+                          title={
+                            b.active ? "Pause new bookings" : "Resume bookings"
+                          }
                           busy={mutation.isPending}
                           onPress={() =>
-                            mutation.mutate({ action: "submit", id: b.id })
+                            mutation.mutate({ action: "toggle", id: b.id })
                           }
                         />
-                        <BoatForm
-                          locations={d.locations}
-                          notify={setMessage}
-                          existing={b}
-                        />
-                      </>
-                    )}
-                    {b.verification_status === "approved" && (
-                      <Button
-                        secondary
-                        title={
-                          b.active ? "Pause new bookings" : "Resume bookings"
-                        }
-                        busy={mutation.isPending}
-                        onPress={() =>
-                          mutation.mutate({ action: "toggle", id: b.id })
-                        }
-                      />
-                    )}
-                  </View>
-                ))}
+                      )}
+                    </View>
+                  );
+                })}
               </>
             ) : tab === "requests" ? (
               <>
                 <View style={styles.card}>
-                  <Text style={styles.h2}>Passenger manifest & check-in</Text>
+                  <Text style={styles.h2}>Passenger manifest & GIS check-in</Text>
                   <Field
                     label="Search booking reference (e.g. BG-...)"
                     placeholder="Type passenger reference"
@@ -389,70 +482,114 @@ export default function Owner() {
                       st === reqFilter;
                     return matchesRef && matchesStatus;
                   })
-                  .map((b) => (
-                    <View key={b.id} style={styles.card}>
-                      <View style={styles.between}>
-                        <Text style={styles.h2}>{b.reference}</Text>
-                        <Badge value={bookingViewStatus(b)} />
-                      </View>
-                      <Text style={styles.subtitle}>
-                        {d.boats.find((x) => x.id === b.boat_id)?.name} ·{" "}
-                        {b.passenger_count} passengers
-                      </Text>
-                      <Text style={styles.muted}>
-                        {d.schedules.find((s) => s.id === b.schedule_id)
-                          ? tripDate(
-                              d.schedules.find((s) => s.id === b.schedule_id)!
-                                .starts_at,
-                            )
-                          : "Schedule unavailable"}
-                      </Text>
-                      {!!b.instructions && (
+                  .map((b) => {
+                    const sched = d.schedules.find(
+                      (s: any) => s.id === b.schedule_id,
+                    );
+                    const boatObj = d.boats.find(
+                      (x: any) => x.id === b.boat_id,
+                    );
+                    const routeObj = d.routes.find(
+                      (r: any) => r.id === sched?.route_id,
+                    );
+                    const originLoc = d.locations.find(
+                      (l: any) => l.id === routeObj?.origin_id,
+                    );
+                    const destLoc = d.locations.find(
+                      (l: any) => l.id === routeObj?.destination_id,
+                    );
+                    return (
+                      <View key={b.id} style={styles.card}>
+                        <View style={styles.between}>
+                          <Text style={styles.h2}>{b.reference}</Text>
+                          <Badge value={bookingViewStatus(b)} />
+                        </View>
+                        <View style={styles.between}>
+                          <Text style={styles.subtitle}>
+                            {boatObj?.name} · {b.passenger_count} pax
+                          </Text>
+                          <Text style={styles.price}>{php(b.total_minor)}</Text>
+                        </View>
                         <Text style={styles.muted}>
-                          Passenger notes: {b.instructions}
+                          {sched
+                            ? tripDate(sched.starts_at)
+                            : "Schedule unavailable"}
                         </Text>
-                      )}
-                      <Text style={styles.price}>{php(b.total_minor)}</Text>
-                      {bookingViewStatus(b) ===
-                        "pending_owner_confirmation" && (
-                        <>
-                          <Button
-                            title="Accept request"
-                            busy={mutation.isPending}
-                            onPress={() =>
-                              mutation.mutate({ action: "accept", id: b.id })
-                            }
-                          />
+                        {!!b.instructions && (
+                          <Text style={styles.muted}>
+                            Passenger notes: {b.instructions}
+                          </Text>
+                        )}
+                        <PickupReminderForm
+                          booking={b}
+                          originName={originLoc?.name ?? "Abra de Ilog Port"}
+                          destinationName={destLoc?.name ?? "Wawa"}
+                          defaultPickupLabel={
+                            b.pickup_label ||
+                            sched?.pickup_label ||
+                            boatObj?.pickup_label ||
+                            originLoc?.landmark ||
+                            "Pier 1 Boarding Ramp"
+                          }
+                          defaultLat={
+                            b.pickup_lat ??
+                            sched?.pickup_lat ??
+                            boatObj?.pickup_lat ??
+                            originLoc?.latitude
+                          }
+                          defaultLng={
+                            b.pickup_lng ??
+                            sched?.pickup_lng ??
+                            boatObj?.pickup_lng ??
+                            originLoc?.longitude
+                          }
+                          notify={setMessage}
+                        />
+                        {bookingViewStatus(b) ===
+                          "pending_owner_confirmation" && (
+                          <View style={styles.row}>
+                            <Button
+                              title="Accept request"
+                              busy={mutation.isPending}
+                              onPress={() =>
+                                mutation.mutate({ action: "accept", id: b.id })
+                              }
+                            />
+                            <Button
+                              secondary
+                              title="Reject request"
+                              busy={mutation.isPending}
+                              onPress={() =>
+                                mutation.mutate({ action: "reject", id: b.id })
+                              }
+                            />
+                          </View>
+                        )}
+                        {bookingViewStatus(b) === "confirmed" && (
                           <Button
                             secondary
-                            title="Reject request"
+                            title="Mark trip completed"
                             busy={mutation.isPending}
                             onPress={() =>
-                              mutation.mutate({ action: "reject", id: b.id })
+                              mutation.mutate({ action: "complete", id: b.id })
                             }
                           />
-                        </>
-                      )}
-                      {bookingViewStatus(b) === "confirmed" && (
+                        )}
+                        {[
+                          "awaiting_payment",
+                          "confirmed",
+                          "completed",
+                        ].includes(bookingViewStatus(b)) && (
+                          <BookingContact id={b.id} />
+                        )}
                         <Button
                           secondary
-                          title="Mark trip completed"
-                          busy={mutation.isPending}
-                          onPress={() =>
-                            mutation.mutate({ action: "complete", id: b.id })
-                          }
+                          title="Contact / booking support"
+                          onPress={() => router.push("/support")}
                         />
-                      )}
-                      {["awaiting_payment", "confirmed", "completed"].includes(
-                        bookingViewStatus(b),
-                      ) && <BookingContact id={b.id} />}
-                      <Button
-                        secondary
-                        title="Contact / booking support"
-                        onPress={() => router.push("/support")}
-                      />
-                    </View>
-                  ))}
+                      </View>
+                    );
+                  })}
                 {!d.bookings.length && (
                   <State empty="No booking requests yet." />
                 )}
@@ -491,7 +628,9 @@ export default function Owner() {
                       );
                     const pct = Math.min(
                       100,
-                      Math.round((booked / Math.max(1, Number(s.capacity))) * 100),
+                      Math.round(
+                        (booked / Math.max(1, Number(s.capacity))) * 100,
+                      ),
                     );
                     return (
                       <View style={styles.card} key={s.id}>
@@ -507,10 +646,27 @@ export default function Owner() {
                         <Text style={styles.muted}>
                           {s.mode} · capacity {s.capacity} · {php(s.price_minor)}
                         </Text>
+                        {!!s.pickup_label && (
+                          <Text
+                            style={{
+                              fontSize: 12,
+                              fontWeight: "700",
+                              color: c.success,
+                            }}
+                          >
+                            📍 Boarding point: {s.pickup_label}
+                          </Text>
+                        )}
                         <View style={{ gap: 5 }}>
                           <View style={styles.between}>
                             <Text style={styles.muted}>Seat occupancy</Text>
-                            <Text style={{ fontSize: 12, fontWeight: "700", color: c.navy }}>
+                            <Text
+                              style={{
+                                fontSize: 12,
+                                fontWeight: "700",
+                                color: c.navy,
+                              }}
+                            >
                               {booked} / {s.capacity} ({pct}%)
                             </Text>
                           </View>
@@ -580,6 +736,179 @@ export default function Owner() {
     </Screen>
   );
 }
+
+function PickupReminderForm({
+  booking,
+  originName,
+  destinationName,
+  defaultPickupLabel,
+  defaultLat,
+  defaultLng,
+  notify,
+}: {
+  booking: any;
+  originName: string;
+  destinationName: string;
+  defaultPickupLabel: string;
+  defaultLat?: number | null;
+  defaultLng?: number | null;
+  notify: (msg: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const resolved = resolvePortGis(
+    originName,
+    defaultLat,
+    defaultLng,
+    defaultPickupLabel,
+  );
+  const [pickupLabel, setPickupLabel] = useState(resolved.landmark);
+  const [lat, setLat] = useState(resolved.lat);
+  const [lng, setLng] = useState(resolved.lng);
+  const [reminder, setReminder] = useState(
+    booking.pickup_reminder ||
+      "Please proceed to the boarding bay 20 minutes before departure and look for our crew.",
+  );
+  const qc = useQueryClient();
+  const sendMutation = useMutation({
+    mutationFn: () =>
+      backend.rpc("send_pickup_reminder", {
+        p_booking: booking.id,
+        p_pickup_label: pickupLabel,
+        p_lat: lat,
+        p_lng: lng,
+        p_reminder: reminder,
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries();
+      setOpen(false);
+      notify(
+        `GIS pickup location & reminder sent to passenger (${booking.reference}).`,
+      );
+    },
+    onError: (e) => notify(e.message),
+  });
+
+  return (
+    <View style={{ gap: 8 }}>
+      <GisRouteCard
+        originName={originName}
+        destinationName={destinationName}
+        pickupLabel={booking.pickup_label || pickupLabel}
+        pickupLat={booking.pickup_lat ?? lat}
+        pickupLng={booking.pickup_lng ?? lng}
+        reminderNote={booking.pickup_reminder}
+        reminderSentAt={booking.reminder_sent_at}
+        compact
+      />
+      {[
+        "pending_owner_confirmation",
+        "awaiting_payment",
+        "confirmed",
+      ].includes(bookingViewStatus(booking)) && (
+        <>
+          <Pressable
+            onPress={() => setOpen((v) => !v)}
+            style={{
+              backgroundColor: "#EFF6FF",
+              borderColor: "#BFDBFE",
+              borderWidth: 1,
+              borderRadius: 10,
+              paddingHorizontal: 12,
+              paddingVertical: 9,
+              flexDirection: "row",
+              justifyContent: "space-between",
+              alignItems: "center",
+            }}
+          >
+            <Text style={{ fontSize: 12, fontWeight: "800", color: c.ocean }}>
+              📍{" "}
+              {open
+                ? "Close GIS Pickup Reminder"
+                : "Set GIS Pickup Point & Remind Passenger"}
+            </Text>
+            <Text style={{ fontSize: 12, fontWeight: "800", color: c.ocean }}>
+              {open ? "▲" : "▼"}
+            </Text>
+          </Pressable>
+          {open && (
+            <View
+              style={{
+                backgroundColor: "#F8FAFC",
+                borderColor: c.border,
+                borderWidth: 1,
+                borderRadius: 12,
+                padding: 12,
+                gap: 10,
+              }}
+            >
+              <Text style={styles.label}>Select Port GIS Pin</Text>
+              <View style={styles.row}>
+                {Object.entries(KNOWN_PORTS).map(([name, info]) => (
+                  <Pressable
+                    key={name}
+                    style={[
+                      styles.pill,
+                      Math.abs(lat - info.lat) < 0.005 && styles.pillSelected,
+                    ]}
+                    onPress={() => {
+                      setLat(info.lat);
+                      setLng(info.lng);
+                      setPickupLabel(info.landmark);
+                    }}
+                  >
+                    <Text style={{ fontSize: 12, fontWeight: "700", color: c.navy }}>
+                      {name}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+              <Field
+                label="Exact pickup bay / landmark for passenger"
+                value={pickupLabel}
+                onChangeText={setPickupLabel}
+              />
+              <Text style={styles.label}>Quick pickup reminder templates</Text>
+              <View style={styles.row}>
+                {[
+                  "Meet at Pier 1 Waiting Shed 20 mins before departure",
+                  "Wait by Wawa Coastal Ramp near Coast Guard desk",
+                  "Our bangka crew is ready at the boarding dock",
+                ].map((tpl) => (
+                  <Pressable
+                    key={tpl}
+                    style={[
+                      styles.pill,
+                      { paddingVertical: 6, paddingHorizontal: 10 },
+                    ]}
+                    onPress={() => setReminder(tpl)}
+                  >
+                    <Text
+                      style={{ fontSize: 11, fontWeight: "600", color: c.ocean }}
+                    >
+                      {tpl}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+              <Field
+                label="Passenger pickup reminder message"
+                multiline
+                value={reminder}
+                onChangeText={setReminder}
+              />
+              <Button
+                title="Send GIS Pickup Reminder to Passenger"
+                busy={sendMutation.isPending}
+                onPress={() => sendMutation.mutate()}
+              />
+            </View>
+          )}
+        </>
+      )}
+    </View>
+  );
+}
+
 function BoatForm({
   locations,
   notify,
@@ -590,6 +919,9 @@ function BoatForm({
   existing?: any;
 }) {
   const [open, setOpen] = useState(false);
+  const [pickupLabel, setPickupLabel] = useState(
+    existing?.pickup_label ?? "Pier 1 Boarding Ramp, Abra de Ilog Port",
+  );
   const qc = useQueryClient();
   const form = useForm({
     resolver: zodResolver(boatSchema),
@@ -608,11 +940,21 @@ function BoatForm({
       if (!(await form.trigger()))
         throw new Error("Please correct the boat details.");
       const v = boatSchema.parse(form.getValues());
+      const homeLoc = locations.find((l) => l.id === v.home_location_id);
+      const portGis = resolvePortGis(
+        homeLoc?.name,
+        homeLoc?.latitude,
+        homeLoc?.longitude,
+        pickupLabel,
+      );
       return backend.rpc("save_boat", {
         p_data: {
           ...v,
           charter_price_minor: Math.round(v.charter_price * 100),
           seat_price_minor: Math.round(v.seat_price * 100),
+          pickup_label: pickupLabel,
+          pickup_lat: portGis.lat,
+          pickup_lng: portGis.lng,
         },
         p_id: existing?.id ?? null,
       });
@@ -704,12 +1046,22 @@ function BoatForm({
                   form.watch("home_location_id") === l.id &&
                     styles.pillSelected,
                 ]}
-                onPress={() => form.setValue("home_location_id", l.id)}
+                onPress={() => {
+                  form.setValue("home_location_id", l.id);
+                  const gis = resolvePortGis(l.name, l.latitude, l.longitude);
+                  setPickupLabel(gis.landmark);
+                }}
               >
                 <Text style={styles.muted}>{l.name}</Text>
               </Pressable>
             ))}
           </View>
+          <Field
+            label="Default GIS boarding bay / landmark"
+            placeholder="e.g. Pier 1 Passenger Waiting Shed"
+            value={pickupLabel}
+            onChangeText={setPickupLabel}
+          />
           {(["charter_price", "seat_price"] as const).map((name) => (
             <Controller
               control={form.control}
@@ -740,6 +1092,7 @@ function BoatForm({
     </View>
   );
 }
+
 function AttachmentForm({
   boat,
   requirements,
@@ -831,6 +1184,7 @@ function AttachmentForm({
     </View>
   );
 }
+
 function ScheduleForm({
   boats,
   routes,
@@ -855,6 +1209,9 @@ function ScheduleForm({
       ? String(boats[0].seat_price_minor / 100)
       : "",
   );
+  const [pickupLabel, setPickupLabel] = useState(
+    boats[0]?.pickup_label || "Pier 1 Boarding Ramp, Abra de Ilog Port",
+  );
   const qc = useQueryClient();
   function applyBoatMode(boatId: string, nextMode: "seat" | "charter") {
     setBoat(boatId);
@@ -862,6 +1219,7 @@ function ScheduleForm({
     const chosen = boats.find((b) => b.id === boatId);
     if (chosen) {
       setCapacity(String(chosen.capacity ?? 1));
+      if (chosen.pickup_label) setPickupLabel(chosen.pickup_label);
       const minor =
         nextMode === "seat"
           ? chosen.seat_price_minor
@@ -887,11 +1245,26 @@ function ScheduleForm({
         capacity: Number(capacity),
         price_minor: Math.round(Number(price) * 100),
       });
-      return backend.rpc("save_schedule", { p_data: input });
+      const rObj = routes.find((r) => r.id === route);
+      const originLoc = locations.find((l) => l.id === rObj?.origin_id);
+      const gis = resolvePortGis(
+        originLoc?.name,
+        originLoc?.latitude,
+        originLoc?.longitude,
+        pickupLabel,
+      );
+      return backend.rpc("save_schedule", {
+        p_data: {
+          ...input,
+          pickup_label: pickupLabel,
+          pickup_lat: gis.lat,
+          pickup_lng: gis.lng,
+        },
+      });
     },
     onSuccess: () => {
       qc.invalidateQueries();
-      notify("Schedule published.");
+      notify("Schedule published with GIS boarding location.");
     },
     onError: (e) => notify(e.message),
   });
@@ -922,7 +1295,12 @@ function ScheduleForm({
               <Pressable
                 key={r.id}
                 style={[styles.pill, route === r.id && styles.pillSelected]}
-                onPress={() => setRoute(r.id)}
+                onPress={() => {
+                  setRoute(r.id);
+                  const orig = locations.find((l) => l.id === r.origin_id);
+                  const gis = resolvePortGis(orig?.name, orig?.latitude, orig?.longitude);
+                  setPickupLabel(gis.landmark);
+                }}
               >
                 <Text style={styles.muted}>
                   {locations.find((l) => l.id === r.origin_id)?.name} →{" "}
@@ -931,6 +1309,12 @@ function ScheduleForm({
               </Pressable>
             ))}
           </View>
+          <Field
+            label="GIS Pickup / Boarding Bay Landmark"
+            placeholder="e.g. Pier 1 Waiting Shed"
+            value={pickupLabel}
+            onChangeText={setPickupLabel}
+          />
           <View style={styles.row}>
             {(["seat", "charter"] as const).map((m) => (
               <Button
