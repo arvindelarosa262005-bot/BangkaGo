@@ -1,14 +1,14 @@
 import {
-  Eye,
-  EyeOff,
   Mail,
-  LockKeyhole,
+  KeyRound,
   ShieldCheck,
   MapPin,
   ArrowLeft,
   Compass,
   Users,
   Ship,
+  CheckCircle2,
+  RefreshCw,
 } from "lucide-react-native";
 import { HarborArt } from "../src/HarborArt";
 import { LiveIndicator } from "../src/live";
@@ -24,12 +24,10 @@ import {
 import Svg, { Path } from "react-native-svg";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { router, useLocalSearchParams } from "expo-router";
-import { Controller, useForm } from "react-hook-form";
-import { zodResolver } from "@hookform/resolvers/zod";
-import { authSchema } from "@bangkago/shared";
 import { backend, supabase, configured } from "../src/client";
 import { Brand, Screen, Field, Button, styles, c } from "../src/ui";
 import * as Linking from "expo-linking";
+
 function GoogleLogo() {
   return (
     <Svg width={18} height={18} viewBox="0 0 24 24">
@@ -52,19 +50,35 @@ function GoogleLogo() {
     </Svg>
   );
 }
+
+function isValidGmail(email: string): boolean {
+  return /^[a-zA-Z0-9._%+-]+@gmail\.com$/i.test(email.trim());
+}
+
 export default function Auth() {
   const params = useLocalSearchParams();
   const { width } = useWindowDimensions();
   const desktop = width >= 850;
-  const [showPassword, setShowPassword] = useState(false);
-  const [mode, setMode] = useState(params.mode === "reset" ? "reset" : "login");
+
+  const [mode, setMode] = useState<"login" | "signup">("login");
+  const [email, setEmail] = useState("");
+  const [displayName, setDisplayName] = useState("");
+  const [role, setRole] = useState<"passenger" | "owner">("passenger");
+  const [otpSent, setOtpSent] = useState(false);
+  const [otpCode, setOtpCode] = useState("");
   const [message, setMessage] = useState("");
+  const [isError, setIsError] = useState(false);
+  const [busy, setBusy] = useState(false);
+
   useEffect(() => {
     if (configured && typeof params.code === "string" && params.code) {
       supabase.auth
         .exchangeCodeForSession(params.code)
         .then(({ error }) => {
-          if (error) setMessage(error.message);
+          if (error) {
+            setIsError(true);
+            setMessage(error.message);
+          }
         });
     }
     const urlSub = Linking.addEventListener("url", ({ url }) => {
@@ -74,7 +88,10 @@ export default function Auth() {
         const code = parsed.queryParams?.code;
         if (typeof code === "string" && code) {
           supabase.auth.exchangeCodeForSession(code).then(({ error }) => {
-            if (error) setMessage(error.message);
+            if (error) {
+              setIsError(true);
+              setMessage(error.message);
+            }
           });
         }
       } catch {
@@ -82,7 +99,6 @@ export default function Auth() {
       }
     });
     const { data } = supabase.auth.onAuthStateChange(async (e, session) => {
-      if (e === "PASSWORD_RECOVERY") setMode("reset");
       if (e === "SIGNED_IN" && session) {
         const pendingRole = await AsyncStorage.getItem("pending-oauth-role");
         if (pendingRole) {
@@ -103,29 +119,242 @@ export default function Auth() {
       data.subscription.unsubscribe();
     };
   }, [params.code]);
-  const form = useForm({
-    resolver: zodResolver(authSchema),
-    defaultValues: {
-      email: "",
-      password: "",
-      display_name: "Traveller",
-      role: "passenger" as "passenger" | "owner",
-    },
-  });
-  const [busy, setBusy] = useState(false);
+
+  function switchMode(next: "login" | "signup") {
+    setMode(next);
+    setOtpSent(false);
+    setOtpCode("");
+    setMessage("");
+    setIsError(false);
+  }
+
+  async function requestGmailOtp() {
+    if (!configured) {
+      setIsError(true);
+      setMessage(
+        "BangkaGo is awaiting its Supabase connection. See the setup guide.",
+      );
+      return;
+    }
+
+    const cleanEmail = email.trim().toLowerCase();
+    if (!isValidGmail(cleanEmail)) {
+      setIsError(true);
+      setMessage(
+        "Mangyaring ilagay ang iyong valid na @gmail.com email address.",
+      );
+      return;
+    }
+
+    if (mode === "signup" && displayName.trim().length < 2) {
+      setIsError(true);
+      setMessage("Ilagay muna ang iyong buong pangalan (Full name).");
+      return;
+    }
+
+    setBusy(true);
+    setIsError(false);
+    setMessage("");
+
+    try {
+      // 1. Check Gmail registration status in database if RPC is available
+      try {
+        const { data: statusData, error: rpcErr } = await supabase.rpc(
+          "check_gmail_status",
+          { p_email: cleanEmail },
+        );
+        if (!rpcErr && statusData) {
+          const isRegistered = Boolean((statusData as any).registered);
+          const existsInAuth = Boolean((statusData as any).exists);
+          if (mode === "login" && !existsInAuth) {
+            setIsError(true);
+            setMessage(
+              `Hindi pa naka-register ang Gmail na ito (${cleanEmail}). Pumunta muna sa "Create account" tab para mag-Sign Up.`,
+            );
+            setBusy(false);
+            return;
+          }
+          if (mode === "signup" && isRegistered) {
+            setIsError(true);
+            setMessage(
+              `Naka-register na ang Gmail na ito (${cleanEmail}). Lumipat sa "Sign in" tab para humingi ng login OTP.`,
+            );
+            setBusy(false);
+            return;
+          }
+        }
+      } catch {
+        // Fallback to Supabase Auth shouldCreateUser enforcement below
+      }
+
+      const redirectTo =
+        Platform.OS === "web" && typeof window !== "undefined"
+          ? `${window.location.origin}/auth`
+          : Linking.createURL("auth");
+
+      await AsyncStorage.setItem(
+        "pending-oauth-role",
+        mode === "signup" ? role : "passenger",
+      );
+
+      // 2. Request OTP from Supabase Auth
+      // When mode === "login", shouldCreateUser: false strictly blocks unregistered Gmails!
+      const { error } = await supabase.auth.signInWithOtp({
+        email: cleanEmail,
+        options: {
+          shouldCreateUser: mode === "signup",
+          emailRedirectTo: redirectTo,
+          data:
+            mode === "signup"
+              ? { display_name: displayName.trim(), role }
+              : undefined,
+        },
+      });
+
+      if (error) {
+        const msg = error.message.toLowerCase();
+        if (
+          mode === "login" &&
+          (msg.includes("signups not allowed") ||
+            msg.includes("user not found") ||
+            msg.includes("invalid") ||
+            error.status === 400 ||
+            error.status === 422)
+        ) {
+          throw new Error(
+            `Hindi pa naka-register ang Gmail na ito (${cleanEmail}). Mag-register muna sa "Create account" (Sign Up) tab bago mag-sign in.`,
+          );
+        }
+        throw error;
+      }
+
+      setOtpSent(true);
+      setIsError(false);
+      setMessage(
+        `Naipadala na ang OTP sa iyong Gmail inbox (${cleanEmail}). Buksan ang iyong Gmail at ilagay ang 6-digit OTP code sa ibaba.`,
+      );
+    } catch (e) {
+      setIsError(true);
+      setMessage(
+        e instanceof Error
+          ? e.message
+          : "Hindi maipadala ang OTP. Subukan ulit.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function verifyGmailOtp() {
+    if (!configured) return;
+    const cleanEmail = email.trim().toLowerCase();
+    const rawInput = otpCode.trim();
+    if (!rawInput) {
+      setIsError(true);
+      setMessage("Ilagay ang OTP code na galing sa iyong Gmail inbox.");
+      return;
+    }
+
+    setBusy(true);
+    setIsError(false);
+    setMessage("");
+
+    try {
+      // Support pasting either the 6/8-digit OTP code OR a full confirmation URL from Gmail
+      if (rawInput.startsWith("http://") || rawInput.startsWith("https://")) {
+        const urlObj = new URL(rawInput);
+        const tokenHash =
+          urlObj.searchParams.get("token_hash") ||
+          urlObj.searchParams.get("token");
+        const codeParam = urlObj.searchParams.get("code");
+        const hashParams = new URLSearchParams(urlObj.hash.replace(/^#/, ""));
+        const accessToken = hashParams.get("access_token");
+        const refreshToken = hashParams.get("refresh_token");
+
+        if (accessToken && refreshToken) {
+          const { error } = await supabase.auth.setSession({
+            access_token: accessToken,
+            refresh_token: refreshToken,
+          });
+          if (error) throw error;
+          router.replace("/(tabs)");
+          return;
+        }
+        if (codeParam) {
+          const { error } =
+            await supabase.auth.exchangeCodeForSession(codeParam);
+          if (error) throw error;
+          router.replace("/(tabs)");
+          return;
+        }
+        if (tokenHash) {
+          const { error } = await supabase.auth.verifyOtp({
+            token_hash: tokenHash,
+            type: "email",
+          });
+          if (error) throw error;
+          router.replace("/(tabs)");
+          return;
+        }
+      }
+
+      // Standard 6-digit / 8-digit OTP token verification
+      const token = rawInput.replace(/\s+/g, "");
+      let lastError: Error | null = null;
+      const typesToTry: Array<"email" | "signup" | "magiclink"> =
+        mode === "signup"
+          ? ["email", "signup", "magiclink"]
+          : ["email", "magiclink", "signup"];
+
+      for (const otpType of typesToTry) {
+        const { data, error } = await supabase.auth.verifyOtp({
+          email: cleanEmail,
+          token,
+          type: otpType,
+        });
+        if (!error && data.session) {
+          if (mode === "signup" && role === "owner") {
+            try {
+              await backend.rpc("register_as_owner");
+            } catch {
+              /* profile already owner */
+            }
+          }
+          router.replace("/(tabs)");
+          return;
+        }
+        if (error) lastError = error;
+      }
+
+      throw (
+        lastError ??
+        new Error("Invalid o expired na ang OTP code. Humingi ng bagong OTP.")
+      );
+    } catch (e) {
+      setIsError(true);
+      setMessage(
+        e instanceof Error
+          ? e.message
+          : "Invalid o expired na ang OTP code. Subukan ulit.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function signInWithGoogle() {
     if (!configured) {
+      setIsError(true);
       setMessage(
         "BangkaGo is awaiting its Supabase connection. See the setup guide.",
       );
       return;
     }
     setBusy(true);
+    setIsError(false);
     setMessage("");
     try {
-      const chosenRole =
-        (mode === "signup" ? form.getValues("role") : "passenger") ??
-        "passenger";
+      const chosenRole = mode === "signup" ? role : "passenger";
       await AsyncStorage.setItem("pending-oauth-role", chosenRole);
       const redirectTo =
         Platform.OS === "web" && typeof window !== "undefined"
@@ -147,6 +376,7 @@ export default function Auth() {
         await Linking.openURL(data.url);
       }
     } catch (e) {
+      setIsError(true);
       setMessage(
         e instanceof Error
           ? e.message
@@ -156,76 +386,7 @@ export default function Auth() {
       setBusy(false);
     }
   }
-  async function submit() {
-    if (!configured) {
-      setMessage(
-        "BangkaGo is awaiting its Supabase connection. See the setup guide.",
-      );
-      return;
-    }
-    setBusy(true);
-    try {
-      if (mode === "forgot") {
-        const { error } = await supabase.auth.resetPasswordForEmail(
-          form.getValues("email"),
-          {
-            redirectTo: Linking.createURL("auth", {
-              queryParams: { mode: "reset" },
-            }),
-          },
-        );
-        if (error) throw error;
-        setMessage("Check your email for a password reset link.");
-      } else if (mode === "reset") {
-        const password = form.getValues("password");
-        if (password.length < 10)
-          throw new Error("Use at least 10 characters.");
-        const { error } = await supabase.auth.updateUser({ password });
-        if (error) throw error;
-        setMessage("Password updated.");
-        router.replace("/(tabs)");
-      } else {
-        if (!(await form.trigger())) return;
-        const v = form.getValues();
-        if (mode === "signup") {
-          if (!v.display_name || v.display_name.trim().length < 2)
-            throw new Error("Enter your full name.");
-          const { data, error } = await supabase.auth.signUp({
-            email: v.email,
-            password: v.password,
-            options: {
-              data: { display_name: v.display_name, role: v.role },
-              emailRedirectTo: Linking.createURL("auth"),
-            },
-          });
-          if (error) throw error;
-          if (data.session) router.replace("/(tabs)");
-          else
-            setMessage(
-              "Check your email to verify your account, then sign in.",
-            );
-        } else {
-          const { error } = await supabase.auth.signInWithPassword({
-            email: v.email,
-            password: v.password,
-          });
-          if (error) throw error;
-          router.replace("/(tabs)");
-        }
-      }
-    } catch (e) {
-      setMessage(
-        e instanceof Error ? e.message : "Unable to authenticate. Try again.",
-      );
-    } finally {
-      setBusy(false);
-    }
-  }
-  function switchMode(next: string) {
-    setMode(next);
-    setMessage("");
-    form.setValue("display_name", next === "signup" ? "" : "Traveller");
-  }
+
   return (
     <Screen
       wide
@@ -259,8 +420,8 @@ export default function Auth() {
             More than a crossing.{"\n"}A connection.
           </Text>
           <Text style={auth.storyBody}>
-            Local boats. New possibilities. Your next journey starts with
-            BangkaGo.
+            Verified Gmail OTP sign-in. Real local boat operators. GIS-guided
+            port boarding points.
           </Text>
           <View style={[auth.art, !desktop && { height: 130, marginTop: 14 }]}>
             <HarborArt height={desktop ? 245 : 150} />
@@ -270,18 +431,18 @@ export default function Auth() {
               {[
                 [
                   Compass,
-                  "Find your shore",
-                  "Discover approved boats and local routes.",
+                  "GIS Port & Pickup Pins",
+                  "See exact GPS coordinates and pickup landmarks.",
                 ],
                 [
                   Users,
-                  "Travel your way",
-                  "Reserve a seat or charter the whole boat.",
+                  "Real Registered Operators",
+                  "Book seats or private charters from verified local owners.",
                 ],
                 [
                   ShieldCheck,
-                  "Know before you go",
-                  "See the fare, operator and trip details.",
+                  "Gmail OTP Security",
+                  "Only registered Gmail accounts can sign in via inbox OTP.",
                 ],
               ].map(([Icon, title, body]) => {
                 const Symbol = Icon as typeof Compass;
@@ -309,71 +470,63 @@ export default function Auth() {
         </View>
         <View style={[auth.form, desktop && { flex: 1, padding: 42 }]}>
           <View style={styles.between}>
-            <Text style={auth.eyebrow}>YOUR JOURNEY, YOUR BOAT.</Text>
+            <Text style={auth.eyebrow}>GMAIL OTP AUTHENTICATION</Text>
             <LiveIndicator />
           </View>
           <Text
             accessibilityRole="header"
             style={[styles.title, { fontSize: 30, marginTop: 8 }]}
           >
-            {mode === "signup"
-              ? "Start your journey"
-              : mode === "forgot"
-                ? "Forgot your password?"
-                : mode === "reset"
-                  ? "Choose a new password"
-                  : "Welcome aboard."}
+            {mode === "signup" ? "Start your journey" : "Welcome aboard."}
           </Text>
-          <Text style={[styles.subtitle, { marginBottom: 10 }]}>
+          <Text style={[styles.subtitle, { marginBottom: 6 }]}>
             {mode === "signup"
-              ? "A few details, a world of new shores."
-              : mode === "forgot"
-                ? "We’ll send a secure link to your email address."
-                : mode === "reset"
-                  ? "Use a strong password to keep your account safe."
-                  : "Sign in and pick up where your journey left off."}
+              ? "I-register ang iyong Gmail at kunin ang OTP code sa iyong Gmail inbox."
+              : "Mag-sign in gamit ang OTP code na ipapadala sa iyong rehistradong Gmail inbox."}
           </Text>
-          {["login", "signup"].includes(mode) && (
-            <View style={auth.tabs}>
-              {[
+
+          <View style={auth.tabs}>
+            {(
+              [
                 ["login", "Sign in"],
                 ["signup", "Create account"],
-              ].map(([value, label]) => (
-                <Pressable
-                  key={value}
-                  accessibilityRole="tab"
-                  accessibilityState={{ selected: mode === value }}
-                  aria-selected={mode === value}
-                  onPress={() => switchMode(value)}
-                  style={[auth.tab, mode === value && auth.activeTab]}
+              ] as const
+            ).map(([value, label]) => (
+              <Pressable
+                key={value}
+                accessibilityRole="tab"
+                accessibilityState={{ selected: mode === value }}
+                aria-selected={mode === value}
+                onPress={() => switchMode(value)}
+                style={[auth.tab, mode === value && auth.activeTab]}
+              >
+                <Text
+                  style={{
+                    fontSize: 13,
+                    fontWeight: "600",
+                    color: mode === value ? c.navy : c.muted,
+                  }}
                 >
-                  <Text
-                    style={{
-                      fontSize: 13,
-                      fontWeight: "600",
-                      color: mode === value ? c.navy : c.muted,
-                    }}
-                  >
-                    {label}
-                  </Text>
-                </Pressable>
-              ))}
-            </View>
-          )}
-          {mode === "signup" && (
+                  {label}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
+
+          {mode === "signup" && !otpSent && (
             <>
               <Text style={styles.label}>How will you use BangkaGo?</Text>
               <View style={auth.roles}>
-                {(["passenger", "owner"] as const).map((role) => {
-                  const selected = form.watch("role") === role;
-                  const Icon = role === "owner" ? Ship : Users;
+                {(["passenger", "owner"] as const).map((r) => {
+                  const selected = role === r;
+                  const Icon = r === "owner" ? Ship : Users;
                   return (
                     <Pressable
-                      key={role}
+                      key={r}
                       accessibilityRole="radio"
                       accessibilityState={{ checked: selected }}
                       aria-checked={selected}
-                      onPress={() => form.setValue("role", role)}
+                      onPress={() => setRole(r)}
                       style={[
                         auth.role,
                         selected && {
@@ -390,151 +543,142 @@ export default function Auth() {
                           color: selected ? c.navy : c.muted,
                         }}
                       >
-                        {role === "owner" ? "Boat owner" : "Passenger"}
+                        {r === "owner" ? "Boat owner" : "Passenger"}
                       </Text>
                     </Pressable>
                   );
                 })}
               </View>
-              <Controller
-                control={form.control}
-                name="display_name"
-                render={({ field }) => (
-                  <Field
-                    label="Full name"
-                    placeholder="Your name"
-                    autoComplete="name"
-                    value={field.value}
-                    onChangeText={field.onChange}
-                    error={form.formState.errors.display_name?.message}
-                  />
-                )}
+              <Field
+                label="Full name"
+                placeholder="Juan Dela Cruz"
+                autoComplete="name"
+                value={displayName}
+                onChangeText={setDisplayName}
               />
             </>
           )}
-          {mode !== "reset" && (
-            <Controller
-              control={form.control}
-              name="email"
-              render={({ field }) => (
-                <Field
-                  label="Email address"
-                  placeholder="you@example.com"
-                  icon={<Mail size={18} color="#8A9DB5" />}
-                  keyboardType="email-address"
-                  autoCapitalize="none"
-                  autoComplete="email"
-                  value={field.value}
-                  onChangeText={field.onChange}
-                  error={form.formState.errors.email?.message}
-                />
-              )}
-            />
+
+          <Field
+            label="Gmail address"
+            placeholder="pangalan@gmail.com"
+            icon={<Mail size={18} color="#8A9DB5" />}
+            keyboardType="email-address"
+            autoCapitalize="none"
+            autoComplete="email"
+            value={email}
+            onChangeText={(v) => {
+              setEmail(v);
+              if (otpSent) setOtpSent(false);
+            }}
+          />
+
+          {otpSent && (
+            <View style={auth.otpBox}>
+              <View style={styles.row}>
+                <CheckCircle2 size={16} color={c.success} />
+                <Text
+                  style={{ fontSize: 12, fontWeight: "700", color: c.navy }}
+                >
+                  Buksan ang iyong Gmail Inbox ({email.trim()})
+                </Text>
+              </View>
+              <Field
+                label="6-Digit OTP Code from Gmail Inbox"
+                placeholder="Halimbawa: 123456"
+                icon={<KeyRound size={18} color={c.ocean} />}
+                keyboardType="default"
+                autoCapitalize="none"
+                value={otpCode}
+                onChangeText={setOtpCode}
+              />
+              <Button
+                title={
+                  mode === "signup"
+                    ? "Verify OTP & Complete Sign Up"
+                    : "Verify OTP & Sign in"
+                }
+                busy={busy}
+                onPress={verifyGmailOtp}
+              />
+              <Pressable
+                accessibilityRole="button"
+                disabled={busy}
+                onPress={requestGmailOtp}
+                style={{
+                  flexDirection: "row",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: 6,
+                  paddingVertical: 6,
+                }}
+              >
+                <RefreshCw size={13} color={c.ocean} />
+                <Text style={styles.link}>Resend OTP to Gmail</Text>
+              </Pressable>
+            </View>
           )}
-          {mode !== "forgot" && (
-            <Controller
-              control={form.control}
-              name="password"
-              render={({ field }) => (
-                <Field
-                  label="Password"
-                  placeholder={
-                    mode === "signup"
-                      ? "At least 10 characters"
-                      : "Enter your password"
-                  }
-                  icon={<LockKeyhole size={18} color="#8A9DB5" />}
-                  secureTextEntry={!showPassword}
-                  autoCapitalize="none"
-                  autoComplete={
-                    mode === "signup" ? "new-password" : "current-password"
-                  }
-                  value={field.value}
-                  onChangeText={field.onChange}
-                  error={form.formState.errors.password?.message}
-                  accessory={
-                    <Pressable
-                      accessibilityRole="button"
-                      accessibilityLabel={
-                        showPassword ? "Hide password" : "Show password"
-                      }
-                      onPress={() => setShowPassword(!showPassword)}
-                      style={{ padding: 10 }}
-                    >
-                      {showPassword ? (
-                        <EyeOff color={c.muted} size={18} />
-                      ) : (
-                        <Eye color={c.muted} size={18} />
-                      )}
-                    </Pressable>
-                  }
-                />
-              )}
-            />
-          )}
-          {mode === "login" && (
-            <Pressable
-              accessibilityRole="button"
-              onPress={() => switchMode("forgot")}
-              style={{ alignSelf: "flex-end", paddingVertical: 5 }}
-            >
-              <Text style={styles.link}>Forgot password</Text>
-            </Pressable>
-          )}
+
           {!!message && (
-            <View accessibilityLiveRegion="polite" style={auth.message}>
-              <Text style={{ fontSize: 13, lineHeight: 21, color: c.text }}>
+            <View
+              accessibilityLiveRegion="polite"
+              style={[
+                auth.message,
+                isError && {
+                  backgroundColor: "#FEF2F2",
+                  borderColor: "#FECACA",
+                },
+              ]}
+            >
+              <Text
+                style={{
+                  fontSize: 13,
+                  lineHeight: 20,
+                  color: isError ? c.error : c.navy,
+                  fontWeight: isError ? "600" : "500",
+                }}
+              >
                 {message}
               </Text>
             </View>
           )}
-          <Button
-            title={
-              mode === "signup"
-                ? "Create account"
-                : mode === "forgot"
-                  ? "Send reset link"
-                  : mode === "reset"
-                    ? "Update password"
-                    : "Sign in"
-            }
-            busy={busy}
-            onPress={submit}
-          />
-          {["login", "signup"].includes(mode) && (
-            <>
-              <View style={auth.divider}>
-                <View style={auth.line} />
-                <Text style={auth.dividerText}>or continue with</Text>
-                <View style={auth.line} />
-              </View>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="Continue with Google"
-                disabled={busy}
-                onPress={signInWithGoogle}
-                style={({ pressed }) => [
-                  auth.googleBtn,
-                  pressed && { backgroundColor: "#F8FAFC" },
-                  busy && { opacity: 0.6 },
-                ]}
-              >
-                <GoogleLogo />
-                <Text style={auth.googleBtnText}>
-                  {mode === "signup"
-                    ? "Sign up with Google"
-                    : "Sign in with Google"}
-                </Text>
-              </Pressable>
-            </>
-          )}
-          {["forgot", "reset"].includes(mode) && (
+
+          {!otpSent && (
             <Button
-              secondary
-              title="Back to sign in"
-              onPress={() => switchMode("login")}
+              title={
+                mode === "signup"
+                  ? "Send Signup OTP to Gmail"
+                  : "Sign in"
+              }
+              busy={busy}
+              onPress={requestGmailOtp}
             />
           )}
+
+          <View style={auth.divider}>
+            <View style={auth.line} />
+            <Text style={auth.dividerText}>or continue with</Text>
+            <View style={auth.line} />
+          </View>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Continue with Google"
+            disabled={busy}
+            onPress={signInWithGoogle}
+            style={({ pressed }) => [
+              auth.googleBtn,
+              pressed && { backgroundColor: "#F8FAFC" },
+              busy && { opacity: 0.6 },
+            ]}
+          >
+            <GoogleLogo />
+            <Text style={auth.googleBtnText}>
+              {mode === "signup"
+                ? "Sign up with Google"
+                : "Sign in with Google"}
+            </Text>
+          </Pressable>
+
           <View style={auth.divider}>
             <View style={auth.line} />
             <Text style={auth.dividerText}>the water is waiting</Text>
@@ -556,7 +700,7 @@ export default function Auth() {
           >
             <ShieldCheck size={14} color="#8397B0" />
             <Text style={{ fontSize: 10, color: c.muted }}>
-              Your account. Your journeys. Your privacy.
+              Hindi makakapag-Sign In ang Gmail na hindi pa rehistrado.
             </Text>
           </View>
           <Pressable
@@ -590,6 +734,7 @@ export default function Auth() {
     </Screen>
   );
 }
+
 const auth = StyleSheet.create({
   shell: {
     borderRadius: 26,
@@ -648,7 +793,7 @@ const auth = StyleSheet.create({
     marginBottom: 3,
   },
   featureBody: { fontSize: 11, color: "#B9CCE4", lineHeight: 18 },
-  form: { padding: 25, gap: 16 },
+  form: { padding: 25, gap: 15 },
   eyebrow: {
     fontSize: 9,
     fontWeight: "700",
@@ -674,7 +819,7 @@ const auth = StyleSheet.create({
     borderWidth: 1,
     borderColor: c.border,
   },
-  roles: { flexDirection: "row", gap: 10, marginTop: -10 },
+  roles: { flexDirection: "row", gap: 10, marginTop: -6 },
   role: {
     flex: 1,
     padding: 14,
@@ -684,6 +829,14 @@ const auth = StyleSheet.create({
     alignItems: "center",
     flexDirection: "row",
     gap: 8,
+  },
+  otpBox: {
+    padding: 14,
+    borderRadius: 14,
+    backgroundColor: "#F8FAFC",
+    borderWidth: 1,
+    borderColor: "#CBD5E1",
+    gap: 12,
   },
   back: { flexDirection: "row", alignItems: "center", gap: 7, padding: 10 },
   message: {

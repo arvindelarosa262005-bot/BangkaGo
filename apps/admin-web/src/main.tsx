@@ -174,12 +174,105 @@ function Brand() {
   );
 }
 function Login() {
+  const [email, setEmail] = useState("");
+  const [otpSent, setOtpSent] = useState(false);
+  const [otpCode, setOtpCode] = useState("");
+  const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
-  const [reset, setReset] = useState(false);
-  const form = useForm({
-    resolver: zodResolver(authSchema),
-    defaultValues: { email: "", password: "", role: "passenger" as const },
-  });
+
+  async function requestAdminOtp(e: React.FormEvent) {
+    e.preventDefault();
+    const cleanEmail = email.trim().toLowerCase();
+    if (!/^[a-zA-Z0-9._%+-]+@gmail\.com$/i.test(cleanEmail)) {
+      setMessage("Mangyaring ilagay ang iyong rehistradong @gmail.com address.");
+      return;
+    }
+    setBusy(true);
+    setMessage("");
+    try {
+      try {
+        const { data: statusData, error: rpcErr } = await supabase.rpc(
+          "check_gmail_status",
+          { p_email: cleanEmail },
+        );
+        if (!rpcErr && statusData && !(statusData as any).exists) {
+          setMessage(
+            `Hindi pa naka-register ang Gmail na ito (${cleanEmail}). Mag-register muna bago mag-sign in.`,
+          );
+          setBusy(false);
+          return;
+        }
+      } catch {
+        // Fallback to shouldCreateUser: false below
+      }
+      const { error } = await supabase.auth.signInWithOtp({
+        email: cleanEmail,
+        options: {
+          shouldCreateUser: false,
+          emailRedirectTo: window.location.origin,
+        },
+      });
+      if (error) {
+        const msg = error.message.toLowerCase();
+        if (
+          msg.includes("signups not allowed") ||
+          msg.includes("user not found") ||
+          error.status === 400 ||
+          error.status === 422
+        ) {
+          throw new Error(
+            `Hindi pa naka-register ang Gmail na ito (${cleanEmail}). Mag-register muna bago mag-sign in.`,
+          );
+        }
+        throw error;
+      }
+      setOtpSent(true);
+      setMessage(
+        `Naipadala na ang OTP sa iyong Gmail inbox (${cleanEmail}). Ilagay ang 6-digit OTP code sa ibaba.`,
+      );
+    } catch (err) {
+      setMessage(
+        err instanceof Error ? err.message : "Unable to send OTP to Gmail.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function verifyAdminOtp(e: React.FormEvent) {
+    e.preventDefault();
+    const cleanEmail = email.trim().toLowerCase();
+    const token = otpCode.trim().replace(/\s+/g, "");
+    if (!token) {
+      setMessage("Ilagay ang 6-digit OTP code mula sa iyong Gmail inbox.");
+      return;
+    }
+    setBusy(true);
+    setMessage("Verifying Gmail OTP…");
+    try {
+      let lastError: Error | null = null;
+      for (const otpType of ["email", "magiclink", "signup"] as const) {
+        const { data, error } = await supabase.auth.verifyOtp({
+          email: cleanEmail,
+          token,
+          type: otpType,
+        });
+        if (!error && data.session) {
+          setMessage("Checking administrator access…");
+          return;
+        }
+        if (error) lastError = error;
+      }
+      throw lastError ?? new Error("Invalid o expired na ang OTP code.");
+    } catch (err) {
+      setMessage(
+        err instanceof Error ? err.message : "Invalid o expired na ang OTP code.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <div className="login">
       <div className="login-story">
@@ -205,42 +298,54 @@ function Login() {
       </div>
       <form
         className="login-form"
-        onSubmit={form.handleSubmit(async (v) => {
-          const { error } = await supabase.auth.signInWithPassword(v);
-          setMessage(error?.message || "Checking administrator access…");
-        })}
+        onSubmit={otpSent ? verifyAdminOtp : requestAdminOtp}
       >
         <ShieldCheck size={34} />
         <h2>Welcome back</h2>
-        <p>Sign in to your BangkaGo administrator account.</p>
+        <p>Sign in to your BangkaGo administrator account via Gmail OTP.</p>
         <label>
-          Email address
+          Registered Gmail address
           <input
             type="email"
-            autoComplete="username"
-            {...form.register("email")}
+            placeholder="admin@gmail.com"
+            autoComplete="email"
+            value={email}
+            onChange={(e) => {
+              setEmail(e.target.value);
+              if (otpSent) setOtpSent(false);
+            }}
           />
         </label>
-        <label>
-          Password
-          <input
-            type="password"
-            autoComplete="current-password"
-            {...form.register("password")}
-          />
-        </label>
-        {Object.values(form.formState.errors).map((e, i) => (
-          <p className="error" key={i}>
-            {e.message}
-          </p>
-        ))}
-        <button disabled={form.formState.isSubmitting}>
-          Sign in <ArrowRight size={16} />
+        {otpSent && (
+          <label>
+            6-Digit OTP Code from Gmail Inbox
+            <input
+              type="text"
+              placeholder="123456"
+              autoComplete="one-time-code"
+              value={otpCode}
+              onChange={(e) => setOtpCode(e.target.value)}
+            />
+          </label>
+        )}
+        <button disabled={busy}>
+          {otpSent ? "Verify OTP & Sign in" : "Send OTP to Gmail"}{" "}
+          <ArrowRight size={16} />
         </button>
+        {otpSent && (
+          <button
+            className="link"
+            type="button"
+            disabled={busy}
+            onClick={(e) => void requestAdminOtp(e)}
+          >
+            Resend OTP to Gmail
+          </button>
+        )}
         <button
           type="button"
           className="google-btn"
-          disabled={form.formState.isSubmitting}
+          disabled={busy}
           onClick={async () => {
             const { error } = await supabase.auth.signInWithOAuth({
               provider: "google",
@@ -272,31 +377,9 @@ function Login() {
           </svg>
           Sign in with Google
         </button>
-        <button
-          className="link"
-          type="button"
-          onClick={async () => {
-            const email = form.getValues("email");
-            if (!email) {
-              setMessage("Enter your email first.");
-              return;
-            }
-            const { error } = await supabase.auth.resetPasswordForEmail(email, {
-              redirectTo: window.location.origin,
-            });
-            setReset(!error);
-            setMessage(
-              error?.message ||
-                "Check your email for the secure password reset link.",
-            );
-          }}
-        >
-          Forgot password?
-        </button>
         <p role="status">{message}</p>
-        {reset && <small>Open the link in this browser.</small>}
         <small>
-          Administrator access is provisioned by your project operator.
+          Only registered administrator Gmail accounts can access the console.
         </small>
       </form>
     </div>

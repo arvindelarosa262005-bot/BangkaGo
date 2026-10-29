@@ -414,32 +414,55 @@ export default function Explore() {
             s.pickup_label,
           );
           return (
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={`View ${s.boat_name}`}
-              key={s.id}
-              style={styles.card}
-              onPress={() => router.push(`/boat/${s.id}`)}
-            >
-              <BoatPhoto path={s.photo_path} />
-              <View style={styles.between}>
-                <Text style={styles.h2}>{s.boat_name}</Text>
-                <View style={styles.row}>
-                  <Badge
-                    value={s.mode === "seat" ? "per seat" : "private charter"}
-                  />
-                  <ShieldCheck color={c.ocean} size={20} />
+            <View key={s.id} style={styles.card}>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`View ${s.boat_name}`}
+                style={{ gap: 10 }}
+                onPress={() => router.push(`/boat/${s.id}`)}
+              >
+                <BoatPhoto path={s.photo_path} />
+                <View style={styles.between}>
+                  <Text style={styles.h2}>{s.boat_name}</Text>
+                  <View style={styles.row}>
+                    <Badge
+                      value={s.mode === "seat" ? "per seat" : "private charter"}
+                    />
+                    <ShieldCheck color={c.ocean} size={20} />
+                  </View>
                 </View>
-              </View>
-              <Text style={styles.muted}>
-                Operator: {s.owner_name} · {s.boat_type.replaceAll("_", " ")}
-              </Text>
-              <View style={styles.row}>
-                <MapPin size={15} color={c.ocean} />
-                <Text style={styles.subtitle}>
-                  {s.origin} → {s.destination}
+                <Text style={styles.muted}>
+                  Operator: {s.owner_name} · {s.boat_type.replaceAll("_", " ")}
                 </Text>
-              </View>
+                <View style={styles.row}>
+                  <MapPin size={15} color={c.ocean} />
+                  <Text style={styles.subtitle}>
+                    {s.origin} → {s.destination}
+                  </Text>
+                </View>
+                <View style={styles.row}>
+                  <Clock size={14} color={c.muted} />
+                  <Text style={styles.muted}>
+                    {tripDate(s.starts_at)}
+                    {s.ends_at ? ` · ${durationLabel(s.starts_at, s.ends_at)}` : ""}
+                  </Text>
+                </View>
+                <View style={styles.between}>
+                  <View>
+                    <Text style={styles.price}>{php(s.price_minor)}</Text>
+                    <Text style={styles.muted}>
+                      {s.mode === "seat" ? "per passenger" : "entire boat"}
+                    </Text>
+                  </View>
+                  <View style={styles.row}>
+                    <Users color={c.muted} size={16} />
+                    <Text style={styles.muted}>
+                      {s.remaining} of {s.capacity} available
+                    </Text>
+                  </View>
+                </View>
+                <Text style={styles.link}>View trip & book →</Text>
+              </Pressable>
               <View
                 style={{
                   backgroundColor: "#F5F9FF",
@@ -460,39 +483,14 @@ export default function Explore() {
                 <Pressable
                   accessibilityRole="button"
                   accessibilityLabel={`Open GPS map for ${s.boat_name}`}
-                  onPress={(e) => {
-                    e.stopPropagation();
-                    openGisNavigation(gis.lat, gis.lng, gis.landmark);
-                  }}
+                  onPress={() => openGisNavigation(gis.lat, gis.lng, gis.landmark)}
                 >
                   <Text style={{ fontSize: 11, fontWeight: "700", color: c.ocean }}>
                     GPS Map →
                   </Text>
                 </Pressable>
               </View>
-              <View style={styles.row}>
-                <Clock size={14} color={c.muted} />
-                <Text style={styles.muted}>
-                  {tripDate(s.starts_at)}
-                  {s.ends_at ? ` · ${durationLabel(s.starts_at, s.ends_at)}` : ""}
-                </Text>
-              </View>
-              <View style={styles.between}>
-                <View>
-                  <Text style={styles.price}>{php(s.price_minor)}</Text>
-                  <Text style={styles.muted}>
-                    {s.mode === "seat" ? "per passenger" : "entire boat"}
-                  </Text>
-                </View>
-                <View style={styles.row}>
-                  <Users color={c.muted} size={16} />
-                  <Text style={styles.muted}>
-                    {s.remaining} of {s.capacity} available
-                  </Text>
-                </View>
-              </View>
-              <Text style={styles.link}>View trip & book →</Text>
-            </Pressable>
+            </View>
           );
         })
       )}

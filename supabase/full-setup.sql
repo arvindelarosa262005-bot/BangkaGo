@@ -893,6 +893,28 @@ begin
 end$$;
 create or replace function public.admin_process_refund(p_refund uuid,p_reason text) returns text language sql security invoker set search_path='' as $$select private.admin_process_refund(p_refund,p_reason)$$;
 
+create or replace function private.check_gmail_status(p_email text) returns jsonb language plpgsql stable security definer set search_path='' as $$
+declare
+ v_user record;
+ v_prof public.profiles;
+begin
+ select id, email, email_confirmed_at into v_user
+ from auth.users
+ where lower(email) = lower(trim(coalesce(p_email,'')))
+ limit 1;
+ if not found then
+  return jsonb_build_object('exists', false, 'registered', false);
+ end if;
+ select * into v_prof from public.profiles where id = v_user.id;
+ return jsonb_build_object(
+  'exists', true,
+  'registered', (v_user.email_confirmed_at is not null),
+  'role', coalesce(v_prof.role, 'passenger'),
+  'account_status', coalesce(v_prof.account_status, 'active')
+ );
+end$$;
+create or replace function public.check_gmail_status(p_email text) returns jsonb language sql stable security invoker set search_path='' as $$select private.check_gmail_status(p_email)$$;
+
 grant execute on function
  private.complete_direct_payment(uuid),
  public.complete_direct_payment(uuid),
@@ -903,6 +925,10 @@ grant execute on function
  private.send_pickup_reminder(uuid,text,double precision,double precision,text),
  public.send_pickup_reminder(uuid,text,double precision,double precision,text)
 to authenticated;
-grant execute on function public.available_schedules() to anon,authenticated;
+grant execute on function
+ private.check_gmail_status(text),
+ public.check_gmail_status(text),
+ public.available_schedules()
+to anon,authenticated;
 
 notify pgrst,'reload schema';

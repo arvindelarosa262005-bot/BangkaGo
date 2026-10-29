@@ -48,17 +48,7 @@ test("passenger onboarding, explore and configuration boundary", async ({
     page.getByText("Welcome aboard.", { exact: true }),
   ).toBeVisible();
   await expect(page.getByText("Not connected", { exact: true })).toBeVisible();
-  await page.getByLabel("Password", { exact: true }).fill("local-preview-test");
-  await page.getByRole("button", { name: "Show password" }).click();
-  await expect(page.getByLabel("Password", { exact: true })).toHaveJSProperty(
-    "type",
-    "text",
-  );
-  await page.getByRole("button", { name: "Hide password" }).click();
-  await expect(page.getByLabel("Password", { exact: true })).toHaveJSProperty(
-    "type",
-    "password",
-  );
+  await page.getByLabel("Gmail address", { exact: true }).fill("traveller@gmail.com");
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
   await expect(
     page.getByText(
