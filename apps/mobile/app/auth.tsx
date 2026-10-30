@@ -204,9 +204,11 @@ export default function Auth() {
       }
     });
 
-    const { data } = supabase.auth.onAuthStateChange(async (e, session) => {
+    const { data } = supabase.auth.onAuthStateChange((e, session) => {
       if (e === "SIGNED_IN" && session) {
-        await finalizeRoleAndRedirect();
+        setTimeout(() => {
+          void finalizeRoleAndRedirect();
+        }, 0);
       }
     });
 

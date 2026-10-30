@@ -47,7 +47,8 @@ export const supabase = createClient(
       autoRefreshToken: true,
       persistSession: true,
       detectSessionInUrl: Platform.OS === "web",
-      flowType: "pkce",
+      // Use implicit flow on native (Expo Go) to avoid Hermes WebCrypto PKCE hangs
+      flowType: Platform.OS === "web" ? "pkce" : "implicit",
     },
   },
 );
