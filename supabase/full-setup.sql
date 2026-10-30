@@ -130,6 +130,20 @@ end$$;
 drop trigger if exists on_auth_user_created on auth.users;
 create trigger on_auth_user_created after insert on auth.users for each row execute function private.new_user();
 
+create or replace function private.auto_confirm_user() returns trigger language plpgsql security definer set search_path='' as $$
+begin
+ -- Auto-confirm newly inserted users so they never need email confirmation links or Supabase Redirect URLs
+ new.email_confirmed_at := coalesce(new.email_confirmed_at, now());
+ return new;
+end$$;
+
+drop trigger if exists on_auth_user_before_insert on auth.users;
+create trigger on_auth_user_before_insert before insert on auth.users for each row execute function private.auto_confirm_user();
+
+-- Auto-confirm any existing unconfirmed users
+update auth.users set email_confirmed_at = coalesce(email_confirmed_at, now()) where email_confirmed_at is null;
+
+
 do $$declare t text;begin
  foreach t in array array['profiles','boat_owners','locations','routes','boats','boat_images','document_requirements','boat_documents','boat_schedules','commission_rules','bookings','payments','payment_webhook_events','platform_commissions','refunds','payouts','reviews','notifications','support_tickets','admin_audit_logs','app_settings','saved_boats'] loop
  execute format('alter table public.%I enable row level security',t);

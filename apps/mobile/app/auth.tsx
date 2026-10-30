@@ -9,6 +9,10 @@ import {
   Ship,
   CheckCircle2,
   RefreshCw,
+  Lock,
+  Eye,
+  EyeOff,
+  Sparkles,
 } from "lucide-react-native";
 import { HarborArt } from "../src/HarborArt";
 import { LiveIndicator } from "../src/live";
@@ -86,9 +90,13 @@ export default function Auth() {
   const desktop = width >= 850;
 
   const [mode, setMode] = useState<"login" | "signup">("login");
+  const [method, setMethod] = useState<"password" | "otp">("password");
   const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [displayName, setDisplayName] = useState("");
   const [role, setRole] = useState<"passenger" | "owner">("passenger");
+
   const [otpSent, setOtpSent] = useState(false);
   const [otpCode, setOtpCode] = useState("");
   const [message, setMessage] = useState("");
@@ -142,7 +150,7 @@ export default function Auth() {
 
     setBusy(true);
     setIsError(false);
-    setMessage("Tinatanggap ang iyong Google / Gmail session…");
+    setMessage("Tinatanggap ang session…");
     try {
       if (kv.access_token && kv.refresh_token) {
         const { error } = await supabase.auth.setSession({
@@ -173,7 +181,7 @@ export default function Auth() {
       setMessage(
         e instanceof Error
           ? e.message
-          : "Hindi ma-verify ang session. Gamitin ang 6-digit Gmail OTP sa ibaba.",
+          : "Hindi ma-verify ang session. Gamitin ang password o Gmail OTP.",
       );
     } finally {
       setBusy(false);
@@ -227,27 +235,30 @@ export default function Auth() {
     setIsError(false);
   }
 
-  async function requestGmailOtp() {
+  // --- 1. DIRECT GMAIL + PASSWORD / PIN AUTHENTICATION (0 REDIRECT URLs NEEDED!) ---
+  async function handlePasswordAuth() {
     if (!configured) {
       setIsError(true);
-      setMessage(
-        "BangkaGo is awaiting its Supabase connection. See the setup guide.",
-      );
+      setMessage("BangkaGo is connecting to Supabase...");
       return;
     }
 
     const cleanEmail = email.trim().toLowerCase();
     if (!isValidGmail(cleanEmail)) {
       setIsError(true);
-      setMessage(
-        "Mangyaring ilagay ang iyong valid na @gmail.com email address.",
-      );
+      setMessage("Pakilagay ang iyong valid na @gmail.com email address.");
+      return;
+    }
+
+    if (!password || password.trim().length < 6) {
+      setIsError(true);
+      setMessage("Ang password o PIN code ay dapat hindi bababa sa 6 characters.");
       return;
     }
 
     if (mode === "signup" && displayName.trim().length < 2) {
       setIsError(true);
-      setMessage("Ilagay muna ang iyong buong pangalan (Full name).");
+      setMessage("Ilagay ang iyong buong pangalan (Full Name).");
       return;
     }
 
@@ -256,7 +267,148 @@ export default function Auth() {
     setMessage("");
 
     try {
-      // 1. Check Gmail registration status in database if RPC is available
+      // Check registration status in Supabase Database
+      let isRegistered = false;
+      let existsInAuth = false;
+      try {
+        const { data: statusData, error: rpcErr } = await supabase.rpc(
+          "check_gmail_status",
+          { p_email: cleanEmail },
+        );
+        if (!rpcErr && statusData) {
+          isRegistered = Boolean((statusData as any).registered);
+          existsInAuth = Boolean((statusData as any).exists);
+        }
+      } catch {
+        /* proceed to auth attempt */
+      }
+
+      if (mode === "login") {
+        // ENFORCE: Unregistered Gmail CANNOT sign in!
+        if (!existsInAuth && !isRegistered) {
+          setIsError(true);
+          setMessage(
+            `❌ Hindi pa rehistrado ang Gmail na ito (${cleanEmail}). Mangyaring lumipat sa "Create account" tab sa itaas para mag-Sign Up bago mag-sign in.`,
+          );
+          setBusy(false);
+          return;
+        }
+
+        // Direct Sign-In (zero redirect URLs, zero browser popups!)
+        const { data, error } = await supabase.auth.signInWithPassword({
+          email: cleanEmail,
+          password: password.trim(),
+        });
+
+        if (error) {
+          const msg = error.message.toLowerCase();
+          if (
+            msg.includes("invalid login credentials") ||
+            msg.includes("invalid grant")
+          ) {
+            throw new Error(
+              "Maling password o PIN code. Pakisuri at subukan ulit, o gamitin ang Gmail OTP sa ibaba kung nakalimutan.",
+            );
+          }
+          if (msg.includes("email not confirmed")) {
+            throw new Error(
+              "Kailangan kumpirmahin ang email. Gamitin ang 'Mag-sign in gamit ang Gmail OTP' sa ibaba.",
+            );
+          }
+          throw error;
+        }
+
+        if (data.session) {
+          await finalizeRoleAndRedirect();
+          return;
+        }
+      } else {
+        // Sign-Up mode
+        if (existsInAuth && isRegistered) {
+          setIsError(true);
+          setMessage(
+            `Naka-register na ang Gmail na ito (${cleanEmail}). Lumipat sa "Sign in" tab para mag-login gamit ang iyong password o OTP.`,
+          );
+          setBusy(false);
+          return;
+        }
+
+        await AsyncStorage.setItem("pending-oauth-role", role);
+
+        const { data, error } = await supabase.auth.signUp({
+          email: cleanEmail,
+          password: password.trim(),
+          options: {
+            data: {
+              display_name: displayName.trim(),
+              role,
+            },
+          },
+        });
+
+        if (error) {
+          throw error;
+        }
+
+        if (role === "owner") {
+          try {
+            await backend.rpc("register_as_owner");
+          } catch {
+            /* profile trigger handled it */
+          }
+        }
+
+        if (data.session) {
+          await finalizeRoleAndRedirect();
+          return;
+        }
+
+        // If auto-confirm isn't active on server yet, switch to OTP to enter code
+        setOtpSent(true);
+        setMethod("otp");
+        setMessage(
+          `Nalikha na ang iyong account! Naipadala ang verification code sa iyong Gmail (${cleanEmail}). Ilagay ang code sa ibaba para pumasok agad.`,
+        );
+      }
+    } catch (e) {
+      setIsError(true);
+      setMessage(
+        e instanceof Error
+          ? e.message
+          : "Hindi makapasok. Pakisuri ang impormasyon at subukan muli.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // --- 2. OPTIONAL GMAIL OTP CODE FLOW (IN-APP 6-DIGIT CODE, ZERO URLs NEEDED!) ---
+  async function requestGmailOtp() {
+    if (!configured) {
+      setIsError(true);
+      setMessage("BangkaGo is connecting to Supabase...");
+      return;
+    }
+
+    const cleanEmail = email.trim().toLowerCase();
+    if (!isValidGmail(cleanEmail)) {
+      setIsError(true);
+      setMessage("Pakilagay ang iyong valid na @gmail.com email address.");
+      return;
+    }
+
+    if (mode === "signup" && displayName.trim().length < 2) {
+      setIsError(true);
+      setMessage("Ilagay ang iyong buong pangalan (Full Name).");
+      return;
+    }
+
+    setBusy(true);
+    setIsError(false);
+    setMessage("");
+
+    try {
+      // 1. Strict database check: cannot sign in if unregistered
       try {
         const { data: statusData, error: rpcErr } = await supabase.rpc(
           "check_gmail_status",
@@ -268,7 +420,7 @@ export default function Auth() {
           if (mode === "login" && !existsInAuth) {
             setIsError(true);
             setMessage(
-              `Hindi pa naka-register ang Gmail na ito (${cleanEmail}). Pumunta muna sa "Create account" tab para mag-Sign Up.`,
+              `❌ Hindi pa rehistrado ang Gmail na ito (${cleanEmail}). Mangyaring lumipat sa "Create account" tab para mag-Sign Up bago mag-sign in.`,
             );
             setBusy(false);
             return;
@@ -276,14 +428,14 @@ export default function Auth() {
           if (mode === "signup" && isRegistered) {
             setIsError(true);
             setMessage(
-              `Naka-register na ang Gmail na ito (${cleanEmail}). Lumipat sa "Sign in" tab para humingi ng login OTP.`,
+              `Naka-register na ang Gmail na ito (${cleanEmail}). Lumipat sa "Sign in" tab para mag-login.`,
             );
             setBusy(false);
             return;
           }
         }
       } catch {
-        // Fallback to Supabase Auth shouldCreateUser enforcement below
+        /* proceed to Supabase Auth check */
       }
 
       await AsyncStorage.setItem(
@@ -291,13 +443,10 @@ export default function Auth() {
         mode === "signup" ? role : "passenger",
       );
 
-      // 2. Request OTP from Supabase Auth
-      // When mode === "login", shouldCreateUser: false strictly blocks unregistered Gmails!
       const { error } = await supabase.auth.signInWithOtp({
         email: cleanEmail,
         options: {
           shouldCreateUser: mode === "signup",
-          emailRedirectTo: expoRedirectUrl,
           data:
             mode === "signup"
               ? { display_name: displayName.trim(), role }
@@ -316,7 +465,7 @@ export default function Auth() {
             error.status === 422)
         ) {
           throw new Error(
-            `Hindi pa naka-register ang Gmail na ito (${cleanEmail}). Mag-register muna sa "Create account" (Sign Up) tab bago mag-sign in.`,
+            `❌ Hindi pa rehistrado ang Gmail na ito (${cleanEmail}). Mag-register muna sa "Create account" tab bago mag-sign in.`,
           );
         }
         throw error;
@@ -325,7 +474,7 @@ export default function Auth() {
       setOtpSent(true);
       setIsError(false);
       setMessage(
-        `Naipadala na ang OTP sa iyong Gmail inbox (${cleanEmail}). Buksan ang Gmail app at ilagay ang 6-digit OTP code sa ibaba.`,
+        `✉️ Naipadala na ang 6-digit OTP sa iyong Gmail (${cleanEmail}). Buksan ang iyong Gmail inbox at i-type ang code sa ibaba.`,
       );
     } catch (e) {
       setIsError(true);
@@ -345,9 +494,7 @@ export default function Auth() {
     const rawInput = otpCode.trim();
     if (!rawInput) {
       setIsError(true);
-      setMessage(
-        "Ilagay ang 6-digit OTP code mula sa iyong Gmail inbox (o i-paste ang redirect link).",
-      );
+      setMessage("Ilagay ang 6-digit OTP code mula sa iyong Gmail inbox.");
       return;
     }
 
@@ -394,7 +541,7 @@ export default function Auth() {
 
       throw (
         lastError ??
-        new Error("Invalid o expired na ang OTP code. Humingi ng bagong OTP.")
+        new Error("Invalid o expired na ang OTP code. Pakisuri at subukan muli.")
       );
     } catch (e) {
       setIsError(true);
@@ -408,12 +555,11 @@ export default function Auth() {
     }
   }
 
+  // --- 3. GOOGLE SIGN-IN (ALTERNATIVE) ---
   async function signInWithGoogle() {
     if (!configured) {
       setIsError(true);
-      setMessage(
-        "BangkaGo is awaiting its Supabase connection. See the setup guide.",
-      );
+      setMessage("BangkaGo is connecting to Supabase...");
       return;
     }
     setBusy(true);
@@ -435,9 +581,10 @@ export default function Auth() {
       });
       if (error) throw error;
       if (Platform.OS !== "web" && data?.url) {
+        setMethod("otp");
         setOtpSent(true);
         setMessage(
-          `Pagkatapos pumili ng Google account sa browser: kung hindi kusang bumalik sa Expo Go, idagdag ang "${expoRedirectUrl}" sa Supabase Redirect URLs — O KAYA i-paste dito sa box sa ibaba ang URL mula sa browser / gamitin ang Gmail OTP!`,
+          `Binubuksan ang Google account selector sa browser... Kung hindi kusang bumalik, gamitin ang Direct Gmail sign-in o ilagay ang OTP code.`,
         );
         await Linking.openURL(data.url);
       }
@@ -446,7 +593,7 @@ export default function Auth() {
       setMessage(
         e instanceof Error
           ? e.message
-          : "Unable to sign in with Google. Try again.",
+          : "Hindi makapag-sign in gamit ang Google. Gamitin ang Direct Gmail Sign-in sa itaas.",
       );
     } finally {
       setBusy(false);
@@ -480,14 +627,14 @@ export default function Auth() {
           <Text
             style={[
               auth.storyTitle,
-              !desktop && { fontSize: 28, lineHeight: 35 },
+              !desktop && { fontSize: 26, lineHeight: 33 },
             ]}
           >
             More than a crossing.{"\n"}A connection.
           </Text>
           <Text style={auth.storyBody}>
-            Verified Gmail OTP sign-in. Real local boat operators. GIS-guided
-            port boarding points.
+            Direct Gmail authentication. Real registered local boat operators.
+            Accurate GPS boarding locations.
           </Text>
           <View style={[auth.art, !desktop && { height: 130, marginTop: 14 }]}>
             <HarborArt height={desktop ? 245 : 150} />
@@ -507,8 +654,8 @@ export default function Auth() {
                 ],
                 [
                   ShieldCheck,
-                  "Gmail OTP Security",
-                  "Only registered Gmail accounts can sign in via inbox OTP.",
+                  "Zero Redirect In-App Login",
+                  "Fast and secure sign-in directly inside the app without browser delays.",
                 ],
               ].map(([Icon, title, body]) => {
                 const Symbol = Icon as typeof Compass;
@@ -534,23 +681,29 @@ export default function Auth() {
             </View>
           )}
         </View>
+
         <View style={[auth.form, desktop && { flex: 1, padding: 42 }]}>
           <View style={styles.between}>
-            <Text style={auth.eyebrow}>GMAIL OTP AUTHENTICATION</Text>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+              <Sparkles size={14} color={c.ocean} />
+              <Text style={auth.eyebrow}>BANGKAGO INSTANT AUTH</Text>
+            </View>
             <LiveIndicator />
           </View>
+
           <Text
             accessibilityRole="header"
-            style={[styles.title, { fontSize: 30, marginTop: 8 }]}
+            style={[styles.title, { fontSize: 28, marginTop: 4 }]}
           >
             {mode === "signup" ? "Start your journey" : "Welcome aboard."}
           </Text>
-          <Text style={[styles.subtitle, { marginBottom: 6 }]}>
+          <Text style={[styles.subtitle, { marginBottom: 6, fontSize: 13 }]}>
             {mode === "signup"
-              ? "Ilagay ang iyong pangalan at @gmail.com address para makatanggap ng 6-digit OTP code sa iyong Gmail inbox (direkta sa Expo Go, hindi na kailangang lumabas sa browser)."
-              : "Ilagay ang iyong rehistradong @gmail.com address para makatanggap ng 6-digit OTP code sa iyong Gmail inbox."}
+              ? "Lumikha ng account gamit ang iyong @gmail.com at password o 6-digit PIN para makapasok agad nang walang redirect delays."
+              : "Mag-sign in gamit ang iyong rehistradong Gmail. Hindi papayagan ng system ang hindi pa rehistradong account."}
           </Text>
 
+          {/* Mode Switch Tabs (Sign in / Create account) */}
           <View style={auth.tabs}>
             {(
               [
@@ -569,7 +722,7 @@ export default function Auth() {
                 <Text
                   style={{
                     fontSize: 13,
-                    fontWeight: "600",
+                    fontWeight: "700",
                     color: mode === value ? c.navy : c.muted,
                   }}
                 >
@@ -579,9 +732,12 @@ export default function Auth() {
             ))}
           </View>
 
+          {/* Role Selection (Passenger vs Boat Owner) */}
           {mode === "signup" && !otpSent && (
             <>
-              <Text style={styles.label}>How will you use BangkaGo?</Text>
+              <Text style={[styles.label, { marginBottom: 6 }]}>
+                Piliin ang iyong gampanin sa BangkaGo:
+              </Text>
               <View style={auth.roles}>
                 {(["passenger", "owner"] as const).map((r) => {
                   const selected = role === r;
@@ -601,23 +757,24 @@ export default function Auth() {
                         },
                       ]}
                     >
-                      <Icon size={20} color={selected ? c.ocean : c.muted} />
+                      <Icon size={19} color={selected ? c.ocean : c.muted} />
                       <Text
                         style={{
-                          fontSize: 12,
-                          fontWeight: "600",
+                          fontSize: 12.5,
+                          fontWeight: "700",
                           color: selected ? c.navy : c.muted,
                         }}
                       >
-                        {r === "owner" ? "Boat owner" : "Passenger"}
+                        {r === "owner" ? "Boat Owner" : "Passenger"}
                       </Text>
                     </Pressable>
                   );
                 })}
               </View>
+
               <Field
-                label="Full name"
-                placeholder="Juan Dela Cruz"
+                label="Buong Pangalan (Full Name)"
+                placeholder="Hal. Juan Dela Cruz"
                 autoComplete="name"
                 value={displayName}
                 onChangeText={setDisplayName}
@@ -625,8 +782,9 @@ export default function Auth() {
             </>
           )}
 
+          {/* Gmail Address Field */}
           <Field
-            label="Gmail address"
+            label="Gmail Address"
             placeholder="pangalan@gmail.com"
             icon={<Mail size={18} color="#8A9DB5" />}
             keyboardType="email-address"
@@ -639,54 +797,165 @@ export default function Auth() {
             }}
           />
 
-          {otpSent && (
-            <View style={auth.otpBox}>
-              <View style={styles.row}>
-                <CheckCircle2 size={16} color={c.success} />
-                <Text
-                  style={{ fontSize: 12, fontWeight: "700", color: c.navy }}
-                >
-                  Ilagay ang 6-Digit OTP mula sa Gmail (o Redirect URL)
-                </Text>
-              </View>
+          {/* --- METHOD 1: PASSWORD / 6-DIGIT PIN (RECOMMENDED ZERO REDIRECT METHOD) --- */}
+          {method === "password" && !otpSent && (
+            <>
               <Field
-                label="6-Digit OTP Code from Gmail Inbox (or Callback URL)"
-                placeholder="Halimbawa: 123456"
-                icon={<KeyRound size={18} color={c.ocean} />}
-                keyboardType="default"
+                label={
+                  mode === "signup"
+                    ? "Gumawa ng Password o 6-Digit PIN"
+                    : "Password o PIN Code"
+                }
+                placeholder={
+                  mode === "signup"
+                    ? "Min. 6 characters (hal. 123456 o secret)"
+                    : "Ilagay ang iyong password o PIN"
+                }
+                icon={<Lock size={18} color="#8A9DB5" />}
+                secureTextEntry={!showPassword}
                 autoCapitalize="none"
-                value={otpCode}
-                onChangeText={setOtpCode}
+                value={password}
+                onChangeText={setPassword}
+                accessory={
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={
+                      showPassword ? "Hide password" : "Show password"
+                    }
+                    onPress={() => setShowPassword(!showPassword)}
+                    style={{ padding: 8 }}
+                  >
+                    {showPassword ? (
+                      <EyeOff size={18} color="#8A9DB5" />
+                    ) : (
+                      <Eye size={18} color="#8A9DB5" />
+                    )}
+                  </Pressable>
+                }
               />
+
               <Button
                 title={
                   mode === "signup"
-                    ? "Verify OTP & Complete Sign Up"
-                    : "Verify OTP & Sign in"
+                    ? "Create Account & Sign In"
+                    : "Sign In"
                 }
                 busy={busy}
-                onPress={verifyGmailOtp}
+                onPress={handlePasswordAuth}
               />
-              {!!email.trim() && (
-                <Pressable
-                  accessibilityRole="button"
-                  disabled={busy}
-                  onPress={requestGmailOtp}
-                  style={{
-                    flexDirection: "row",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    gap: 6,
-                    paddingVertical: 6,
-                  }}
-                >
-                  <RefreshCw size={13} color={c.ocean} />
-                  <Text style={styles.link}>Resend OTP to Gmail</Text>
-                </Pressable>
-              )}
-            </View>
+
+              {/* Alternative to switch to OTP */}
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => {
+                  setMethod("otp");
+                  setMessage("");
+                  setIsError(false);
+                }}
+                style={auth.methodToggle}
+              >
+                <KeyRound size={14} color={c.ocean} />
+                <Text style={styles.link}>
+                  {mode === "login"
+                    ? "Nakalimutan ang password? Mag-sign in gamit ang 6-digit Gmail OTP"
+                    : "Gusto mo ba ng 6-digit verification code sa Gmail inbox?"}
+                </Text>
+              </Pressable>
+            </>
           )}
 
+          {/* --- METHOD 2: 6-DIGIT OTP IN-APP CODE --- */}
+          {method === "otp" && (
+            <>
+              {!otpSent ? (
+                <>
+                  <Button
+                    title={
+                      mode === "signup"
+                        ? "Ipadala ang Sign Up OTP sa Gmail"
+                        : "Ipadala ang Login OTP sa Gmail"
+                    }
+                    busy={busy}
+                    onPress={requestGmailOtp}
+                  />
+                  <Pressable
+                    accessibilityRole="button"
+                    onPress={() => {
+                      setMethod("password");
+                      setMessage("");
+                      setIsError(false);
+                    }}
+                    style={auth.methodToggle}
+                  >
+                    <Lock size={14} color={c.ocean} />
+                    <Text style={styles.link}>
+                      Gamitin ang Password o PIN sa halip
+                    </Text>
+                  </Pressable>
+                </>
+              ) : (
+                <View style={auth.otpBox}>
+                  <View style={styles.row}>
+                    <CheckCircle2 size={16} color={c.success} />
+                    <Text
+                      style={{ fontSize: 12.5, fontWeight: "700", color: c.navy }}
+                    >
+                      Ilagay ang 6-Digit Code mula sa Gmail
+                    </Text>
+                  </View>
+                  <Field
+                    label="6-Digit OTP Code (o i-paste ang login token)"
+                    placeholder="Hal. 123456"
+                    icon={<KeyRound size={18} color={c.ocean} />}
+                    keyboardType="number-pad"
+                    autoCapitalize="none"
+                    value={otpCode}
+                    onChangeText={setOtpCode}
+                  />
+                  <Button
+                    title="I-verify ang OTP at Pumasok"
+                    busy={busy}
+                    onPress={verifyGmailOtp}
+                  />
+                  <View
+                    style={{
+                      flexDirection: "row",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      marginTop: 4,
+                    }}
+                  >
+                    <Pressable
+                      accessibilityRole="button"
+                      disabled={busy}
+                      onPress={requestGmailOtp}
+                      style={{
+                        flexDirection: "row",
+                        alignItems: "center",
+                        gap: 6,
+                        paddingVertical: 6,
+                      }}
+                    >
+                      <RefreshCw size={13} color={c.ocean} />
+                      <Text style={styles.link}>Resend OTP</Text>
+                    </Pressable>
+                    <Pressable
+                      accessibilityRole="button"
+                      onPress={() => {
+                        setMethod("password");
+                        setOtpSent(false);
+                      }}
+                      style={{ paddingVertical: 6 }}
+                    >
+                      <Text style={styles.link}>Bumalik sa Password</Text>
+                    </Pressable>
+                  </View>
+                </View>
+              )}
+            </>
+          )}
+
+          {/* Feedback/Error Banner */}
           {!!message && (
             <View
               accessibilityLiveRegion="polite"
@@ -711,23 +980,14 @@ export default function Auth() {
             </View>
           )}
 
-          {!otpSent && (
-            <Button
-              title={
-                mode === "signup"
-                  ? "Send Signup OTP to Gmail"
-                  : "Sign in"
-              }
-              busy={busy}
-              onPress={requestGmailOtp}
-            />
-          )}
-
+          {/* Divider */}
           <View style={auth.divider}>
             <View style={auth.line} />
-            <Text style={auth.dividerText}>or continue with</Text>
+            <Text style={auth.dividerText}>o iba pang paraan</Text>
             <View style={auth.line} />
           </View>
+
+          {/* Google OAuth (Secondary / Optional) */}
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="Continue with Google"
@@ -747,64 +1007,62 @@ export default function Auth() {
             </Text>
           </Pressable>
 
-          {Platform.OS !== "web" && (
-            <View
-              style={{
-                backgroundColor: "#F8FAFC",
-                borderRadius: 10,
-                padding: 10,
-                borderWidth: 1,
-                borderColor: c.border,
-                gap: 3,
-              }}
-            >
-              <Text style={{ fontSize: 10.5, fontWeight: "700", color: c.navy }}>
-                💡 Gamit ang Expo Go sa Phone?
-              </Text>
-              <Text style={{ fontSize: 10.5, color: c.muted, lineHeight: 15 }}>
-                Pinakamabilis ang{" "}
-                <Text style={{ fontWeight: "700", color: c.ocean }}>
-                  Gmail OTP
-                </Text>{" "}
-                sa itaas dahil hindi na kailangang lumabas sa Chrome. Kung
-                gagamit ng Google button, idagdag ang{" "}
-                <Text style={{ fontWeight: "700", color: c.navy }}>
-                  {expoRedirectUrl}
-                </Text>{" "}
-                sa Supabase → Authentication → URL Configuration → Redirect URLs.
+          {/* Helpful notice */}
+          <View
+            style={{
+              backgroundColor: "#F8FAFC",
+              borderRadius: 12,
+              padding: 11,
+              borderWidth: 1,
+              borderColor: c.border,
+              gap: 4,
+            }}
+          >
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+              <ShieldCheck size={14} color={c.ocean} />
+              <Text style={{ fontSize: 11, fontWeight: "700", color: c.navy }}>
+                Bakit Direct Gmail + Password / OTP ang inirerekomenda?
               </Text>
             </View>
-          )}
+            <Text style={{ fontSize: 11, color: c.muted, lineHeight: 16 }}>
+              Hindi ito nangangailangan ng anumang Redirect URL sa Supabase at
+              hindi lumalabas sa external browser, kaya 100% garantisadong
+              walang loading delay o redirect error.
+            </Text>
+          </View>
 
           <View style={auth.divider}>
             <View style={auth.line} />
             <Text style={auth.dividerText}>the water is waiting</Text>
             <View style={auth.line} />
           </View>
+
           <Button
             secondary
-            title="Explore boats"
+            title="Explore boats without signing in"
             onPress={() => router.replace("/(tabs)")}
           />
+
           <View
             style={{
               flexDirection: "row",
               alignItems: "center",
               justifyContent: "center",
               gap: 6,
-              marginTop: 4,
+              marginTop: 2,
             }}
           >
             <ShieldCheck size={14} color="#8397B0" />
-            <Text style={{ fontSize: 10, color: c.muted }}>
-              Hindi makakapag-Sign In ang Gmail na hindi pa rehistrado.
+            <Text style={{ fontSize: 10.5, color: c.muted }}>
+              Protektado: Hindi makakapag-login ang hindi pa rehistradong Gmail.
             </Text>
           </View>
+
           <Pressable
             accessibilityRole="link"
             accessibilityLabel="Terms and privacy"
             onPress={() => router.push("/legal")}
-            style={{ alignSelf: "center", padding: 8 }}
+            style={{ alignSelf: "center", padding: 6 }}
           >
             <Text
               style={{
@@ -818,6 +1076,7 @@ export default function Auth() {
           </Pressable>
         </View>
       </View>
+
       <Text
         style={{
           fontSize: 10,
@@ -892,7 +1151,7 @@ const auth = StyleSheet.create({
   featureBody: { fontSize: 11, color: "#B9CCE4", lineHeight: 18 },
   form: { padding: 25, gap: 15 },
   eyebrow: {
-    fontSize: 9,
+    fontSize: 10,
     fontWeight: "700",
     letterSpacing: 1.2,
     color: c.ocean,
@@ -935,6 +1194,13 @@ const auth = StyleSheet.create({
     borderColor: "#CBD5E1",
     gap: 12,
   },
+  methodToggle: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 7,
+    paddingVertical: 6,
+  },
   back: { flexDirection: "row", alignItems: "center", gap: 7, padding: 10 },
   message: {
     padding: 14,
@@ -952,7 +1218,7 @@ const auth = StyleSheet.create({
   dividerText: { fontSize: 10, color: "#8C9CB0" },
   line: { height: 1, backgroundColor: c.border, flex: 1 },
   googleBtn: {
-    minHeight: 50,
+    minHeight: 48,
     borderRadius: 14,
     borderWidth: 1,
     borderColor: c.border,
@@ -968,7 +1234,7 @@ const auth = StyleSheet.create({
     shadowOffset: { width: 0, height: 2 },
   },
   googleBtnText: {
-    fontSize: 14,
+    fontSize: 13.5,
     fontWeight: "600",
     color: c.navy,
   },

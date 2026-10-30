@@ -9,3 +9,5 @@ supabase/.temp/
 supabase/.branches/
 *.log
 test-results/
+.github/
+

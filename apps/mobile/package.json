@@ -7,7 +7,7 @@
     "start": "expo start",
     "start:go": "expo start --go --max-workers 1",
     "start:tunnel": "expo start --go --tunnel --max-workers 1",
-    "android": "expo start --android",
+    "android": "expo run:android",
     "web": "expo start --web",
     "typecheck": "tsc --noEmit"
   },
